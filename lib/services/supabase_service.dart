@@ -411,7 +411,7 @@ class SupabaseService {
   /// Checks if a device exists for the user and returns its ID.
   Future<String?> getLinkedDeviceId(String userId) async {
     // Calculate the exact time 3 minutes ago
-    final cutoff = DateTime.now().subtract(const Duration(minutes: 3)).toIso8601String();
+    final cutoff = DateTime.now().toUtc().subtract(const Duration(minutes: 3)).toIso8601String();
 
     final shareData = await _client
         .from('device_shares')
@@ -423,6 +423,7 @@ class SupabaseService {
         .maybeSingle();
 
     if (shareData != null) {
+      print('=== BACKGROUND TRACKING: Device ID Retrieved ($shareData) ===');
       final device = shareData['devices'] as Map<String, dynamic>;
       return device['id']?.toString();
     }
@@ -433,6 +434,7 @@ class SupabaseService {
   /// Inserts a new location ping into the history table
   Future<void> logLocationPing({
     required String deviceId,
+    required String sessionId,
     required double latitude,
     required double longitude,
   }) async {
@@ -440,6 +442,7 @@ class SupabaseService {
       'device_id': deviceId,
       'latitude': latitude,
       'longitude': longitude,
+      'session_id': sessionId,
     });
   }
 }

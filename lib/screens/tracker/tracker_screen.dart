@@ -45,6 +45,7 @@ class TrackerScreen extends StatefulWidget {
 
 class _TrackerScreenState extends State<TrackerScreen> {
   late LatLng _caneLocation;
+  bool _hasLiveLocation = false;
   int _battery = 100;
   bool _isOnline = true;
 
@@ -65,6 +66,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   void initState() {
     super.initState();
     _caneLocation = LatLng(widget.lat ?? 14.1153, widget.lng ?? 122.9566);
+    _hasLiveLocation = widget.lat != null && widget.lng != null;
     _fetchInitialData();
     _subscribeToUpdates();
   }
@@ -85,6 +87,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
       setState(() {
         if (liveData['latitude'] != null && liveData['longitude'] != null) {
           _caneLocation = LatLng((liveData['latitude'] as num).toDouble(), (liveData['longitude'] as num).toDouble());
+          _hasLiveLocation = true;
         }
         _battery = liveData['battery_level'] ?? _battery;
       });
@@ -160,6 +163,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         final newCoord = LatLng((newData['latitude'] as num).toDouble(), (newData['longitude'] as num).toDouble());
         setState(() {
           _caneLocation = newCoord;
+          _hasLiveLocation = true;
           if (_trips.isNotEmpty) {
             final updated = List<TripSession>.from(_trips);
             final first = updated[0];
@@ -211,6 +215,16 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   List<TripSession> get _activeTrips => _trips.where((t) => _activeTripIds.contains(t.id)).toList();
 
+  /// Where the pin should sit: the live device location if we have one,
+  /// otherwise the last recorded point from the most recent trip's line.
+  LatLng get _pinLocation {
+    if (_hasLiveLocation) return _caneLocation;
+    if (_trips.isNotEmpty && _trips.first.coords.isNotEmpty) {
+      return _trips.first.coords.last;
+    }
+    return _caneLocation;
+  }
+
   Set<Polyline> _buildPolylines() {
     return _activeTrips
         .map((trip) => Polyline(
@@ -231,7 +245,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     return {
       Marker(
         markerId: const MarkerId('cane'),
-        position: _caneLocation,
+        position: _pinLocation,
         infoWindow: InfoWindow(title: _deviceName),
         icon: BitmapDescriptor.defaultMarkerWithHue(_isOnline ? BitmapDescriptor.hueAzure : BitmapDescriptor.hueViolet),
         anchor: const Offset(0.5, 1),
@@ -253,7 +267,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
             onTap: (_) => _handleMapTap(),
             polylines: _buildPolylines(),
             markers: _buildMarkers(),
-            myLocationEnabled: true,
+            myLocationEnabled: false,
+            myLocationButtonEnabled: false,
           ),
 
           if (_tappedTripId != null)

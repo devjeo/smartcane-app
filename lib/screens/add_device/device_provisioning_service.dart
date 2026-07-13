@@ -273,7 +273,7 @@ class DeviceProvisioningService {
       try {
         final res = await http
             .get(Uri.parse('$_deviceBaseUrl/status'))
-            .timeout(const Duration(seconds: 5));
+            .timeout(const Duration(seconds: 1));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           switch (data['status']) {

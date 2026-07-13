@@ -15,6 +15,7 @@ import 'screens/device_settings/device_settings_screen.dart';
 import 'screens/geofence_editor/geofence_editor_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'theme/app_colors.dart';
+import 'services/background_location_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,9 @@ Future<void> main() async {
     url: const String.fromEnvironment('SUPABASE_URL', defaultValue: 'https://ldnspxkgplermswenlcw.supabase.co'),
     publishableKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY', defaultValue: 'sb_publishable_BS85pEN8ysMODHWLRwqGwQ_uRimdY6P'),
   );
+
+  await initializeBackgroundService();
+  print('=== BACKGROUND TRACKING: Service Initialized ===');
 
   // Needed for push_notification_service.dart (FCM). Run `flutterfire configure`
   // to generate firebase_options.dart, then pass it here as `options:`.

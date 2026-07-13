@@ -60,7 +60,7 @@ class DeviceModel {
         ? DateTime.tryParse(lastUpdatedRaw)
         : null;
     final isActuallyOnline = lastPing != null &&
-        DateTime.now().difference(lastPing).inMilliseconds < 10000;
+        DateTime.now().difference(lastPing).inMilliseconds < 50000;
 
     final guardianName = (profile?['full_name'] as String?)?.trim().isNotEmpty == true
         ? profile!['full_name'] as String

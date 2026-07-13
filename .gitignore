@@ -47,4 +47,5 @@ app.*.map.json
 build/
 smartcane.rar
 .env
+/.env
 *.hprof

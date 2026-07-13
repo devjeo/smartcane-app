@@ -21,25 +21,46 @@
 
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; 
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'supabase_service.dart';
+import 'dart:async';
 
-const String kLocationServiceNotificationChannelId = 'location_tracking_channel';
+const String kLocationServiceNotificationChannelId =
+    'location_tracking_channel';
+
+const AndroidNotificationChannel channel = AndroidNotificationChannel(
+  kLocationServiceNotificationChannelId,
+  'Smart Cane Tracking',
+  description: 'This channel is used for background location tracking.',
+  importance: Importance.high, // High importance ensures it displays reliably
+);
+
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
 
 Future<void> initializeBackgroundService() async {
+  print('=== BACKGROUND TRACKING: Initializing Service ===');
+
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+
   final service = FlutterBackgroundService();
+  print('=== BACKGROUND TRACKING: Service Instance Created ===');
 
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: _onServiceStart,
-      autoStart: false,
+      autoStart: true,
       isForegroundMode: true,
       notificationChannelId: kLocationServiceNotificationChannelId,
       initialNotificationTitle: 'SmartCaneApp',
       initialNotificationContent: 'Tracking location in the background',
     ),
     iosConfiguration: IosConfiguration(
-      autoStart: false,
+      autoStart: true,
       onForeground: _onServiceStart,
       onBackground: (service) async => true,
     ),
@@ -48,40 +69,60 @@ Future<void> initializeBackgroundService() async {
 
 @pragma('vm:entry-point')
 void _onServiceStart(ServiceInstance service) async {
+  print('=== BACKGROUND TRACKING: Isolate Started ===');
+
   // ⚠️ IMPORTANT: Background isolates do not share memory with the main app.
-  // You MUST re-initialize Supabase here before using the service.
-  // Replace the URL and AnonKey with your actual Supabase credentials.
   await Supabase.initialize(
-    url: 'YOUR_SUPABASE_URL', 
-    anonKey: 'YOUR_SUPABASE_ANON_KEY',
+    url: 'https://ldnspxkgplermswenlcw.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxkbnNweGtncGxlcm1zd2VubGN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MTg1OTUsImV4cCI6MjA4OTA5NDU5NX0.qCn-1WvwwZNrIF2m6um2CnDozkhWPhPmVyrMrQo8Svg',
   );
 
-  final dbService = SupabaseService.instance;
+  print('=== BACKGROUND TRACKING: Supabase Initialized ===');
 
-  Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.medium, // matches expo-location's Balanced
-      distanceFilter: 50, // meters — matches original distanceInterval
-    ),
-  ).listen((position) async {
+  final dbService = SupabaseService.instance;
+  // generate random session ID for this background tracking session
+  final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+
+  // Triggers exactly once every 60 seconds, regardless of movement
+  Timer.periodic(const Duration(seconds: 20), (timer) async {
+    print('=== BACKGROUND TRACKING: Timer Triggered ===');
+
     try {
       final user = dbService.currentUser;
-      if (user == null) return;
-
-      // Gets the device ID, aborting if none is linked to this user
-      final deviceId = await dbService.getLinkedDeviceId(user.id);
-      if (deviceId == null) {
-        return; 
+      if (user == null) {
+        print('=== BACKGROUND TRACKING ABORTED: User is null ===');
+        return;
       }
+      print('=== BACKGROUND TRACKING: User Found (${user.id}) ===');
 
-      // Logs the location
+      // 1. Check if the device is online FIRST
+      final deviceId = await dbService.getLinkedDeviceId(user.id);
+      print('=== BACKGROUND TRACKING: Device ID Retrieved ($deviceId) ===');
+      if (deviceId == null) {
+        print(
+            '=== BACKGROUND TRACKING ABORTED: Device offline or not found ===');
+        return;
+      }
+      print('=== BACKGROUND TRACKING: Device Found ($deviceId) ===');
+
+      // 2. Only wake up the GPS chip if the device is actually online
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+        ),
+      );
+
+      // 3. Send the location
       await dbService.logLocationPing(
+        sessionId: sessionId,
         deviceId: deviceId,
         latitude: position.latitude,
         longitude: position.longitude,
       );
+      print('=== BACKGROUND TRACKING SUCCESS: Pushed to Supabase ===');
     } catch (e) {
-      // Swallow errors here; a background isolate has nowhere to surface them.
+      print('=== BACKGROUND TRACKING FATAL ERROR: $e ===');
     }
   });
 }
@@ -98,7 +139,8 @@ Future<bool> startBackgroundTracking() async {
   // On Android 10+, background access is a *separate* permission prompt
   // from foreground access — `geolocator` surfaces this via
   // LocationPermission.always vs .whileInUse.
-  if (permission != LocationPermission.always && permission != LocationPermission.whileInUse) {
+  if (permission != LocationPermission.always &&
+      permission != LocationPermission.whileInUse) {
     return false;
   }
 

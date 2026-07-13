@@ -51,7 +51,8 @@ class PushNotificationService {
       requestSoundPermission: true,
     );
     await _localNotifications.initialize(
-      const InitializationSettings(android: androidInit, iOS: iosInit),
+      // Add the named parameter requested by the compiler:
+      settings: const InitializationSettings(android: androidInit, iOS: iosInit),
     );
 
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
@@ -94,10 +95,10 @@ class PushNotificationService {
     const details = NotificationDetails(android: androidDetails);
 
     await _localNotifications.show(
-      notification.hashCode,
-      notification.title,
-      notification.body,
-      details,
+      id: notification.hashCode,
+      title: notification.title,
+      body: notification.body,
+      notificationDetails: details, // Make sure to use the exact label 'notificationDetails'
     );
   }
 }
