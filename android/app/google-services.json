@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "286837439184",
+    "project_id": "jeo-smartcane",
+    "storage_bucket": "jeo-smartcane.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:286837439184:android:66e860050c436df6487cd5",
+        "android_client_info": {
+          "package_name": "com.devjeo.smartcane"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBb7zuG8x_V-2hvIdx04tq_XOmJzLHC198"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:286837439184:android:b7df41ae064b3551487cd5",
+        "android_client_info": {
+          "package_name": "com.example.smartcane"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBb7zuG8x_V-2hvIdx04tq_XOmJzLHC198"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
