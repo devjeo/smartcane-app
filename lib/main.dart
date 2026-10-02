@@ -27,7 +27,7 @@ Future<void> main() async {
     publishableKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY', defaultValue: 'sb_publishable_BS85pEN8ysMODHWLRwqGwQ_uRimdY6P'),
   );
 
-  await initializeBackgroundService();
+  // await initializeBackgroundService();
   print('=== BACKGROUND TRACKING: Service Initialized ===');
 
   // Needed for push_notification_service.dart (FCM). Run `flutterfire configure`

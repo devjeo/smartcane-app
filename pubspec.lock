@@ -41,14 +41,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.4"
-  app_settings:
-    dependency: "direct main"
-    description:
-      name: app_settings
-      sha256: "64d50e666fd96ae90301bf71205f05019286f940ad6f5fed3d1be19c6af7546a"
-      url: "https://pub.dev"
-    source: hosted
-    version: "7.0.0"
   args:
     dependency: transitive
     description:
@@ -816,22 +808,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.4.1"
-  op_result:
-    dependency: transitive
-    description:
-      name: op_result
-      sha256: fbd86b49976732e747d2a0d3c586ff5c2ada38e59a370c9866f19c500d4ec00f
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.4.0"
-  op_wifi_utils:
-    dependency: "direct main"
-    description:
-      name: op_wifi_utils
-      sha256: "71b03b97872cde87c8d718b532eff2cc5339e475afa616b072c31639cae5f683"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.5.0"
   package_config:
     dependency: transitive
     description:
@@ -952,6 +928,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
+  qr:
+    dependency: transitive
+    description:
+      name: qr
+      sha256: "5a1d2586170e172b8a8c8470bbbffd5eb0cd38a66c0d77155ea138d3af3a4445"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.0.2"
+  qr_flutter:
+    dependency: "direct main"
+    description:
+      name: qr_flutter
+      sha256: "5095f0fc6e3f71d08adef8feccc8cea4f12eec18a2e31c2e8d82cb6019f4b097"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.1.0"
   realtime_client:
     dependency: transitive
     description:
@@ -1269,14 +1261,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.3"
-  wifi_scan:
-    dependency: "direct main"
-    description:
-      name: wifi_scan
-      sha256: "78896ea3db8838769053accd47cab02a62ead6480557e235295320603f84c9c7"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.4.1+2"
   win32:
     dependency: transitive
     description:

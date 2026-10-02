@@ -224,6 +224,38 @@ class SupabaseService {
     });
   }
 
+  // ---------- QR pairing (matches cane_boot.py on the Raspberry Pi) ----------
+
+  /// Asks Supabase for a single-use pairing token for the logged-in user.
+  /// The token goes into the QR code the cane scans; the cane later trades it
+  /// (claim_device_with_token) to attach itself to this account, so the user
+  /// id never has to be put in the QR.
+  Future<String> createPairingToken(String deviceName) async {
+    final user = currentUser;
+    if (user == null) {
+      throw Exception('You must be logged in to pair a device.');
+    }
+    final res = await _client.rpc('create_pairing_token', params: {
+      'p_device_name': deviceName,
+    });
+    final token = res is Map ? res['token'] : res;
+    if (token is! String || token.isEmpty) {
+      throw Exception('Could not create a setup code. Please try again.');
+    }
+    return token;
+  }
+
+  /// Has the cane claimed this token yet? Returns a map with `claimed`,
+  /// `expired` and (once claimed) `device_id`; an empty map if the server
+  /// sent nothing usable.
+  Future<Map<String, dynamic>> pairingTokenStatus(String token) async {
+    final res = await _client.rpc('pairing_token_status', params: {
+      'p_token': token,
+    });
+    final row = res is List ? (res.isEmpty ? null : res.first) : res;
+    return row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
+  }
+
   /// Looks up a device by its 6-digit share code
   Future<Map<String, dynamic>?> getDeviceByShareCode(String code) async {
     return await _client

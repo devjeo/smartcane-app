@@ -8,12 +8,14 @@ import '../../services/main_tab_controller.dart';
 import '../../theme/app_colors.dart';
 import 'widgets/device_card.dart';
 import 'widgets/pending_device_card.dart';
+import '../../services/background_location_service.dart';
 
 /// Lets DashboardScreen know when it's become the visible route again (e.g.
 /// coming back from Add Device) so it can rescan for newly-registered
 /// devices — not just on first launch. Register this with your app's
 /// MaterialApp: `navigatorObservers: [dashboardRouteObserver]`.
-final RouteObserver<PageRoute> dashboardRouteObserver = RouteObserver<PageRoute>();
+final RouteObserver<PageRoute> dashboardRouteObserver =
+    RouteObserver<PageRoute>();
 
 /// Equivalent of `export default function GuardianDashboard()` in index.tsx.
 class DashboardScreen extends StatefulWidget {
@@ -49,6 +51,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     _fetchDevices();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (SupabaseService.instance.currentUser != null) {
+        startBackgroundTracking();
+      }
+    });
   }
 
   @override
@@ -184,10 +192,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                         children: [
                           const Text('My Devices',
                               style: TextStyle(
-                                  fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textMain)),
                           Text(
                             'Monitoring ${_devices.length} registered ${_devices.length == 1 ? 'cane' : 'canes'}',
-                            style: const TextStyle(fontSize: 14, color: AppColors.textSub),
+                            style: const TextStyle(
+                                fontSize: 14, color: AppColors.textSub),
                           ),
                         ],
                       ),
@@ -209,7 +220,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                               ],
                             ),
                             alignment: Alignment.center,
-                            child: const Icon(Ionicons.shield_checkmark, size: 24, color: AppColors.primary),
+                            child: const Icon(Ionicons.shield_checkmark,
+                                size: 24, color: AppColors.primary),
                           ),
                           Positioned(
                             top: -2,
@@ -220,7 +232,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                               decoration: BoxDecoration(
                                 color: AppColors.alert,
                                 shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 1),
+                                border:
+                                    Border.all(color: Colors.white, width: 1),
                               ),
                             ),
                           ),
@@ -246,19 +259,28 @@ class _DashboardScreenState extends State<DashboardScreen>
                             color: AppColors.card,
                             borderRadius: BorderRadius.circular(15),
                             boxShadow: const [
-                              BoxShadow(color: Color(0x0D000000), blurRadius: 10, offset: Offset(0, 4)),
+                              BoxShadow(
+                                  color: Color(0x0D000000),
+                                  blurRadius: 10,
+                                  offset: Offset(0, 4)),
                             ],
                           ),
                           child: Row(
                             children: [
                               _SummaryStat(
-                                  value: onlineCount, label: 'Online', color: AppColors.online, showBorder: true),
+                                  value: onlineCount,
+                                  label: 'Online',
+                                  color: AppColors.online,
+                                  showBorder: true),
                               _SummaryStat(
                                   value: offlineCount,
                                   label: 'Offline',
                                   color: AppColors.offline,
                                   showBorder: true),
-                              _SummaryStat(value: alertCount, label: 'Alerts', color: AppColors.alert),
+                              _SummaryStat(
+                                  value: alertCount,
+                                  label: 'Alerts',
+                                  color: AppColors.alert),
                             ],
                           ),
                         ),
@@ -267,35 +289,41 @@ class _DashboardScreenState extends State<DashboardScreen>
                           DeviceCard(
                             key: ValueKey(device.id),
                             device: device,
-                            onTap: () => Navigator.of(context).pushNamed('/tracker', arguments: {
+                            onTap: () => Navigator.of(context)
+                                .pushNamed('/tracker', arguments: {
                               'id': device.id,
                               'name': device.name,
                               'userRole': device.userRole,
                               'lat': device.lat,
                               'lng': device.lng,
                             }),
-                            onAlertsTap: () => MainTabController.instance.showLogsFiltered(
+                            onAlertsTap: () =>
+                                MainTabController.instance.showLogsFiltered(
                               device: device.id,
                               category: 'All Types',
                             ),
                           ),
 
                         for (final pending in _pendingDevices)
-                          PendingDeviceCard(key: ValueKey(pending.id), device: pending),
+                          PendingDeviceCard(
+                              key: ValueKey(pending.id), device: pending),
 
                         // Add device (dashed border)
                         InkWell(
                           borderRadius: BorderRadius.circular(15),
-                          onTap: () => Navigator.of(context).pushNamed('/add-device'),
+                          onTap: () =>
+                              Navigator.of(context).pushNamed('/add-device'),
                           child: Container(
                             margin: const EdgeInsets.only(top: 10, bottom: 20),
                             padding: const EdgeInsets.all(25),
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(15),
-                              border: Border.all(color: AppColors.primary, width: 1.5),
+                              border: Border.all(
+                                  color: AppColors.primary, width: 1.5),
                             ),
                             child: CustomPaint(
-                              painter: _DashedBorderPainter(color: AppColors.primary),
+                              painter: _DashedBorderPainter(
+                                  color: AppColors.primary),
                               child: Column(
                                 children: [
                                   Container(
@@ -304,18 +332,24 @@ class _DashboardScreenState extends State<DashboardScreen>
                                     decoration: BoxDecoration(
                                       color: const Color(0xFFF0F8FF),
                                       shape: BoxShape.circle,
-                                      border: Border.all(color: AppColors.border),
+                                      border:
+                                          Border.all(color: AppColors.border),
                                     ),
                                     alignment: Alignment.center,
-                                    child: const Icon(Ionicons.add, size: 28, color: AppColors.primary),
+                                    child: const Icon(Ionicons.add,
+                                        size: 28, color: AppColors.primary),
                                   ),
                                   const SizedBox(height: 15),
                                   const Text('Add New Device',
                                       style: TextStyle(
-                                          fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary)),
                                   const SizedBox(height: 5),
                                   const Text('Tap to pair a new Smart Cane',
-                                      style: TextStyle(fontSize: 14, color: AppColors.textSub)),
+                                      style: TextStyle(
+                                          fontSize: 14,
+                                          color: AppColors.textSub)),
                                 ],
                               ),
                             ),
@@ -337,7 +371,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                 child: Center(
                   child: Container(
                     width: MediaQuery.of(context).size.width * 0.9,
-                    padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 15, vertical: 10),
                     decoration: BoxDecoration(
                       color: const Color(0xCC1E293B),
                       borderRadius: BorderRadius.circular(10),
@@ -346,7 +381,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                       children: [
                         RotationTransition(
                           turns: _spinController,
-                          child: const Icon(Ionicons.reload, size: 20, color: Colors.white),
+                          child: const Icon(Ionicons.reload,
+                              size: 20, color: Colors.white),
                         ),
                         const SizedBox(width: 10),
                         const Expanded(
@@ -391,9 +427,12 @@ class _SummaryStat extends StatelessWidget {
             : null,
         child: Column(
           children: [
-            Text('$value', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: color)),
+            Text('$value',
+                style: TextStyle(
+                    fontSize: 28, fontWeight: FontWeight.bold, color: color)),
             const SizedBox(height: 3),
-            Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textSub)),
+            Text(label,
+                style: const TextStyle(fontSize: 12, color: AppColors.textSub)),
           ],
         ),
       ),
