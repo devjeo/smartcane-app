@@ -47,6 +47,7 @@ class SupabaseService {
             activity_status,
             is_online,
             last_updated,
+            last_seen_at,
             guardian_id,
             logs (count),
             profiles (
@@ -63,9 +64,11 @@ class SupabaseService {
 
     final devices = await Future.wait(rows.map((row) async {
       final d = row['devices'] as Map<String, dynamic>;
-      final lat = (d['latitude'] as num?)?.toDouble() ?? 13.1391;
-      final lng = (d['longitude'] as num?)?.toDouble() ?? 123.7438;
-      final address = await _reverseGeocode(lat, lng);
+      final lat = (d['latitude'] as num?)?.toDouble();
+      final lng = (d['longitude'] as num?)?.toDouble();
+      final address = (lat == null || lng == null)
+          ? 'Location not available yet'
+          : await _reverseGeocode(lat, lng);
       return DeviceModel.fromShareRow(row, exactAddress: address);
     }));
 
@@ -180,17 +183,25 @@ class SupabaseService {
 
   /// Equivalent of handleLogout()'s supabase.auth.signOut() call.
   Future<void> signOut() async {
+    // Forget this phone's push token so the next person who logs in on it
+    // (or nobody) gets the alerts, not the account that just signed out.
+    final user = currentUser;
+    if (user != null) {
+      try {
+        await _client
+            .from('profiles')
+            .update({'expo_push_token': null}).eq('id', user.id);
+      } catch (_) {}
+    }
     await _client.auth.signOut();
   }
 
-  /// Equivalent of saving the Expo push token to `profiles`, but for an FCM
-  /// token. Rename the column in Supabase (or keep expo_push_token) to match.
+  /// Saves this phone's FCM token on the current user's profile (column
+  /// `expo_push_token` is just reused for FCM). The `save_push_token` SQL
+  /// function also removes the same token from any other account.
   Future<void> savePushToken(String token) async {
-    final user = currentUser;
-    if (user == null) return;
-    await _client
-        .from('profiles')
-        .update({'expo_push_token': token}).eq('id', user.id);
+    if (currentUser == null) return;
+    await _client.rpc('save_push_token', params: {'p_token': token});
   }
 
   // ---------- Add Device Screen ----------
@@ -407,9 +418,24 @@ class SupabaseService {
   Future<Map<String, dynamic>?> getDeviceLiveStatus(String deviceId) async {
     return await _client
         .from('devices')
-        .select('latitude, longitude, battery_level, is_online, last_updated')
+        .select('latitude, longitude, battery_level, last_seen_at')
         .eq('id', deviceId)
         .maybeSingle();
+  }
+
+  /// Cheap status poll for the dashboard: just each device's last heartbeat.
+  Future<Map<String, DateTime?>> fetchLastSeen(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    final data = await _client
+        .from('devices')
+        .select('id, last_seen_at')
+        .inFilter('id', ids);
+    return {
+      for (final row in List<Map<String, dynamic>>.from(data))
+        row['id'].toString(): row['last_seen_at'] != null
+            ? DateTime.tryParse(row['last_seen_at'] as String)
+            : null,
+    };
   }
 
   /// Retrieves up to 2000 of the most recent location points for a device's history.
@@ -447,10 +473,11 @@ class SupabaseService {
 
     final shareData = await _client
         .from('device_shares')
-        .select('devices!inner(id, last_updated)')
+        .select('devices!inner(id, last_seen_at)')
         .eq('user_id', userId)
-        // Ensure the device's last_updated timestamp is newer than the cutoff
-        .gte('devices.last_updated', cutoff)
+        // Only log while the cane itself has heartbeated recently. (last_updated
+        // is also bumped by location writes, so it can't be used as a liveness signal.)
+        .gte('devices.last_seen_at', cutoff)
         .limit(1) 
         .maybeSingle();
 

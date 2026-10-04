@@ -8,18 +8,16 @@ class DeviceModel {
   final String serial;
   final int alerts;
   final String userRole; // 'owner' | 'viewer'
-  final bool isOnline;
-  final bool isConnected;
+  final DateTime? lastSeenAt;   // written ONLY by the cane's heartbeat (devices.last_seen_at)
   final int battery;
   final String location;
-  final double lat;
-  final double lng;
+  final double? lat;   // null until the device has reported a real location
+  final double? lng;
   final Color userBgBase;
   final Color userColorBase;
   final String userInitials;
   final String userName;
   final String version;
-  final String statusText;
 
   const DeviceModel({
     required this.id,
@@ -27,8 +25,7 @@ class DeviceModel {
     required this.serial,
     required this.alerts,
     required this.userRole,
-    required this.isOnline,
-    required this.isConnected,
+    required this.lastSeenAt,
     required this.battery,
     required this.location,
     required this.lat,
@@ -38,10 +35,37 @@ class DeviceModel {
     required this.userInitials,
     required this.userName,
     required this.version,
-    required this.statusText,
   });
 
   bool get isViewer => userRole == 'viewer';
+
+  /// The cane heartbeats every 15 s; no heartbeat for this long = offline.
+  static const onlineWindow = Duration(seconds: 50);
+
+  /// Evaluated every time it is read, so a screen that rebuilds on a timer
+  /// flips to Offline by itself instead of waiting for the next fetch.
+  bool get isOnline =>
+      lastSeenAt != null && DateTime.now().difference(lastSeenAt!) < onlineWindow;
+  bool get isConnected => isOnline;
+  String get statusText => isOnline ? 'Online' : 'Offline';
+
+  DeviceModel withLastSeen(DateTime? t) => DeviceModel(
+        id: id,
+        name: name,
+        serial: serial,
+        alerts: alerts,
+        userRole: userRole,
+        lastSeenAt: t,
+        battery: battery,
+        location: location,
+        lat: lat,
+        lng: lng,
+        userBgBase: userBgBase,
+        userColorBase: userColorBase,
+        userInitials: userInitials,
+        userName: userName,
+        version: version,
+      );
 
   /// Builds a DeviceModel from a `device_shares` row joined with `devices`
   /// and `profiles`, exactly like the RN `.map((shareRow) => ...)` block.
@@ -55,12 +79,8 @@ class DeviceModel {
     final d = shareRow['devices'] as Map<String, dynamic>? ?? {};
     final profile = d['profiles'] as Map<String, dynamic>?;
 
-    final lastUpdatedRaw = d['last_updated'] as String?;
-    final lastPing = lastUpdatedRaw != null
-        ? DateTime.tryParse(lastUpdatedRaw)
-        : null;
-    final isActuallyOnline = lastPing != null &&
-        DateTime.now().difference(lastPing).inMilliseconds < 50000;
+    final lastSeenRaw = d['last_seen_at'] as String?;
+    final lastSeen = lastSeenRaw != null ? DateTime.tryParse(lastSeenRaw) : null;
 
     final guardianName = (profile?['full_name'] as String?)?.trim().isNotEmpty == true
         ? profile!['full_name'] as String
@@ -83,18 +103,16 @@ class DeviceModel {
       serial: d['id']?.toString() ?? '',
       alerts: logsCount,
       userRole: shareRow['role'] as String? ?? 'owner',
-      isOnline: isActuallyOnline,
-      isConnected: isActuallyOnline,
+      lastSeenAt: lastSeen,
       battery: d['battery_level'] as int? ?? 100,
       location: exactAddress,
-      lat: (d['latitude'] as num?)?.toDouble() ?? 13.1391,
-      lng: (d['longitude'] as num?)?.toDouble() ?? 123.7438,
+      lat: (d['latitude'] as num?)?.toDouble(),
+      lng: (d['longitude'] as num?)?.toDouble(),
       userBgBase: const Color(0xFFF0EFFF),
       userColorBase: AppColors.accent,
       userInitials: initials,
       userName: guardianName,
       version: 'v1.0.0',
-      statusText: isActuallyOnline ? 'Online' : 'Offline',
     );
   }
 }

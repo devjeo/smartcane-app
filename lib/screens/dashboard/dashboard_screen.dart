@@ -34,6 +34,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   late final AnimationController _spinController;
   Timer? _bannerTimer;
+  Timer? _statusTimer;
 
   @override
   void initState() {
@@ -51,6 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     _fetchDevices();
+    _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _refreshStatus());
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (SupabaseService.instance.currentUser != null) {
@@ -73,6 +75,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     dashboardRouteObserver.unsubscribe(this);
     _spinController.dispose();
     _bannerTimer?.cancel();
+    _statusTimer?.cancel();
     super.dispose();
   }
 
@@ -152,6 +155,24 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (SupabaseService.instance.currentUser == null && mounted) {
         Navigator.of(context).pushReplacementNamed('/login');
       }
+    }
+  }
+
+  /// Every 10 s: re-read each cane's last heartbeat so Online/Offline stays
+  /// correct without a manual refresh (and rebuilds even if the read fails).
+  Future<void> _refreshStatus() async {
+    if (!mounted || _devices.isEmpty) return;
+    try {
+      final seen = await SupabaseService.instance
+          .fetchLastSeen(_devices.map((d) => d.id).toList());
+      if (!mounted) return;
+      setState(() {
+        _devices = _devices
+            .map((d) => seen.containsKey(d.id) ? d.withLastSeen(seen[d.id]) : d)
+            .toList();
+      });
+    } catch (_) {
+      if (mounted) setState(() {});   // still re-evaluate with what we have
     }
   }
 

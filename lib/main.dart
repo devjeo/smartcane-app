@@ -27,7 +27,7 @@ Future<void> main() async {
     publishableKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY', defaultValue: 'sb_publishable_BS85pEN8ysMODHWLRwqGwQ_uRimdY6P'),
   );
 
-  // await initializeBackgroundService();
+  await initializeBackgroundService();
   print('=== BACKGROUND TRACKING: Service Initialized ===');
 
   // Needed for push_notification_service.dart (FCM). Run `flutterfire configure`
@@ -64,7 +64,7 @@ class SmartCaneApp extends StatelessWidget {
         '/about': (context) => const AboutScreen(),
         '/tracker': (context) {
           final args = ModalRoute.of(context)!.settings.arguments as Map?;
-          return TrackerScreen(deviceId: args?['id'] as String, userRole: args?['userRole'] as String, deviceName: args?['name'] as String, lat: args?['lat'] as double, lng: args?['lng'] as double);
+          return TrackerScreen(deviceId: args?['id'] as String, userRole: args?['userRole'] as String, deviceName: args?['name'] as String, lat: args?['lat'] as double?, lng: args?['lng'] as double?);
         },
         // Deep-links into the Logs tab pre-filtered by device/category —
         // equivalent of router.push('/logs', { targetDevice, targetCategory })
@@ -80,8 +80,8 @@ class SmartCaneApp extends StatelessWidget {
           return DeviceSettingsScreen(
             id: args?['id'] as String,
             name: args?['name'] as String,
-            lat: args?['lat'] as double,
-            lng: args?['lng'] as double,
+            lat: args?['lat'] as double?,
+            lng: args?['lng'] as double?,
           );
         },
         '/geofence-editor': (context) {
@@ -89,8 +89,8 @@ class SmartCaneApp extends StatelessWidget {
           return GeofenceEditorScreen(
             deviceId: args?['id'] as String,
             deviceName: args?['name'] as String,
-            lat: args?['lat'] as double,
-            lng: args?['lng'] as double,
+            lat: args?['lat'] as double?,
+            lng: args?['lng'] as double?,
           );
         },
       },

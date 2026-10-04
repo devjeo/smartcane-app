@@ -21,6 +21,10 @@ class PushNotificationService {
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
+  // registerForPushNotifications() runs every time the tab screen mounts;
+  // this keeps the listeners from being added more than once.
+  bool _listening = false;
+
   /// Call once, near app startup, after Supabase + Firebase are initialized
   /// and (ideally) after the user is logged in — mirrors the useEffect in
   /// TabLayout that ran on every tab-layout mount.
@@ -55,7 +59,27 @@ class PushNotificationService {
       settings: const InitializationSettings(android: androidInit, iOS: iosInit),
     );
 
-    FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+    // Channel the server-sent push targets (must match 'guardian_alerts' in
+    // the Edge Function), so alerts are high-priority even in the background.
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(const AndroidNotificationChannel(
+          'guardian_alerts',
+          'Guardian Alerts',
+          importance: Importance.max,
+        ));
+
+    if (!_listening) {
+      _listening = true;
+      FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+      // FCM can rotate the token at any time; save the new one.
+      messaging.onTokenRefresh.listen((t) async {
+        try {
+          await SupabaseService.instance.savePushToken(t);
+        } catch (_) {}
+      });
+    }
 
     // 3. Get this device's unique push token
     final token = await messaging.getToken();

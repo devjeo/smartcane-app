@@ -70,7 +70,7 @@ class _GeofenceEditorScreenState extends State<GeofenceEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _initialCenter = LatLng(widget.lat ?? 13.1391, widget.lng ?? 123.7438);
+    _initialCenter = LatLng(widget.lat ?? 14.1153, widget.lng ?? 122.9566);
     _loadSavedZones();
     _loadVertexIcons();
   }

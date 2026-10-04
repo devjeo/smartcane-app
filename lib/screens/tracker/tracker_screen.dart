@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../models/device_model.dart';
 import '../../services/supabase_service.dart';
 
 const List<Color> kTrackColors = [
@@ -47,7 +49,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   late LatLng _caneLocation;
   bool _hasLiveLocation = false;
   int _battery = 100;
-  bool _isOnline = true;
+  bool _isOnline = false;      // unknown until the first status read
+  DateTime? _lastSeen;
+  Timer? _statusTimer;
 
   List<TripSession> _trips = [];
   List<String> _activeTripIds = [];
@@ -69,12 +73,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
     _hasLiveLocation = widget.lat != null && widget.lng != null;
     _fetchInitialData();
     _subscribeToUpdates();
+    _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _refreshStatus());
   }
 
   final _dbService = SupabaseService.instance;
 
   @override
   void dispose() {
+    _statusTimer?.cancel();
     if (_channel != null) _dbService.unsubscribe(_channel!);
     super.dispose();
   }
@@ -91,13 +97,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
         }
         _battery = liveData['battery_level'] ?? _battery;
       });
-      final lastUpdated = liveData['last_updated'];
-      if (lastUpdated != null) {
-        final lastPingTime = DateTime.parse(lastUpdated).millisecondsSinceEpoch;
-        final currentTime = DateTime.now().millisecondsSinceEpoch;
-        isActuallyOnline = (currentTime - lastPingTime) < 10000;
-        if (mounted) setState(() => _isOnline = isActuallyOnline);
-      }
+      _applyLastSeen(liveData['last_seen_at']);
+      isActuallyOnline = _isOnline;
     }
 
     final historyData = await _dbService.getDeviceLocationHistory(widget.deviceId);
@@ -141,8 +142,34 @@ class _TrackerScreenState extends State<TrackerScreen> {
           _trips = formattedTrips;
           if (formattedTrips.isNotEmpty) _activeTripIds = [formattedTrips[0].id];
         });
+        if (_hasRealLocation) {
+          _mapController?.animateCamera(CameraUpdate.newLatLng(_pinLocation));
+        }
       }
     }
+  }
+
+  /// Online = the cane's own heartbeat (devices.last_seen_at) is recent.
+  /// Same rule as the dashboard; the is_online column is not used.
+  void _applyLastSeen(dynamic raw) {
+    if (raw is String) _lastSeen = DateTime.tryParse(raw);
+    _recomputeOnline();
+  }
+
+  void _recomputeOnline() {
+    final online = _lastSeen != null &&
+        DateTime.now().difference(_lastSeen!) < DeviceModel.onlineWindow;
+    if (mounted && online != _isOnline) setState(() => _isOnline = online);
+  }
+
+  Future<void> _refreshStatus() async {
+    _recomputeOnline();   // flips to Offline even if the poll below fails
+    try {
+      final live = await _dbService.getDeviceLiveStatus(widget.deviceId);
+      if (live == null || !mounted) return;
+      _applyLastSeen(live['last_seen_at']);
+      if (live['battery_level'] != null) setState(() => _battery = live['battery_level']);
+    } catch (_) {}
   }
 
   String _formatDate(DateTime d) {
@@ -181,7 +208,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         });
       }
       if (newData['battery_level'] != null) setState(() => _battery = newData['battery_level']);
-      if (newData['is_online'] != null) setState(() => _isOnline = newData['is_online']);
+      if (newData['last_seen_at'] != null) _applyLastSeen(newData['last_seen_at']);
     });
   }
 
@@ -241,7 +268,13 @@ class _TrackerScreenState extends State<TrackerScreen> {
         .toSet();
   }
 
+  /// True once we have a real position: a live device location, or at least
+  /// one recorded history point. Without one, no pin is drawn at all.
+  bool get _hasRealLocation =>
+      _hasLiveLocation || (_trips.isNotEmpty && _trips.first.coords.isNotEmpty);
+
   Set<Marker> _buildMarkers() {
+    if (!_hasRealLocation) return {};
     return {
       Marker(
         markerId: const MarkerId('cane'),
