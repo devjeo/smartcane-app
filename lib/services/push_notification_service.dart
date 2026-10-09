@@ -1,5 +1,6 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'main_tab_controller.dart';
 import 'supabase_service.dart';
 
 /// Flutter/FCM equivalent of the notification block in _layout.tsx:
@@ -57,6 +58,8 @@ class PushNotificationService {
     await _localNotifications.initialize(
       // Add the named parameter requested by the compiler:
       settings: const InitializationSettings(android: androidInit, iOS: iosInit),
+      // Tap on a notification shown while the app is open.
+      onDidReceiveNotificationResponse: (r) => _openLogFromId(r.payload),
     );
 
     // Channel the server-sent push targets (must match 'guardian_alerts' in
@@ -73,6 +76,13 @@ class PushNotificationService {
     if (!_listening) {
       _listening = true;
       FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+      // Tap on a notification while the app is in the background...
+      FirebaseMessaging.onMessageOpenedApp
+          .listen((m) => _openLogFromId(m.data['log_id'] as String?));
+      // ...or the one that launched the app from a closed state.
+      messaging.getInitialMessage().then((m) {
+        if (m != null) _openLogFromId(m.data['log_id'] as String?);
+      });
       // FCM can rotate the token at any time; save the new one.
       messaging.onTokenRefresh.listen((t) async {
         try {
@@ -123,6 +133,12 @@ class PushNotificationService {
       title: notification.title,
       body: notification.body,
       notificationDetails: details, // Make sure to use the exact label 'notificationDetails'
+      payload: message.data['log_id'] as String?,
     );
+  }
+
+  void _openLogFromId(String? logId) {
+    if (logId == null || logId.isEmpty) return;
+    MainTabController.instance.showLog(logId);
   }
 }

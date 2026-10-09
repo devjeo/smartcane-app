@@ -13,12 +13,15 @@ class MainTabController {
   void Function(int index)? _setTabIndex;
   void Function({String? device, String? category})? _applyLogsFilter;
   void Function()? _clearLogsFilter;
+  void Function(String logId)? _openLog;
 
   void attach({
     required void Function(int index) setTabIndex,
     required void Function({String? device, String? category}) applyLogsFilter,
     required void Function() clearLogsFilter,
+    void Function(String logId)? openLog,
   }) {
+    _openLog = openLog;
     _setTabIndex = setTabIndex;
     _applyLogsFilter = applyLogsFilter;
     _clearLogsFilter = clearLogsFilter;
@@ -28,6 +31,12 @@ class MainTabController {
   /// filter applied. Used by the device card's alert badge.
   void showLogsFiltered({String? device, String? category}) {
     _applyLogsFilter?.call(device: device, category: category);
+    _setTabIndex?.call(1);
+  }
+
+  /// Opens the Logs tab with this log already expanded (tapping a push).
+  void showLog(String logId) {
+    _openLog?.call(logId);
     _setTabIndex?.call(1);
   }
 

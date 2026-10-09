@@ -142,12 +142,23 @@ class SupabaseService {
         .toList();
   }
 
-  /// Subscribes to new INSERTs on `logs`, same as the `live-logs-page` channel.
+  /// Temporary (1 h) link to an SOS photo in the private bucket. Allowed by
+  /// the storage policy only for users that have a device_shares row.
+  Future<String?> sosPhotoUrl(String path) async {
+    try {
+      return await _client.storage.from('sos-photos').createSignedUrl(path, 3600);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Subscribes to INSERTs *and* UPDATEs on `logs`: the SOS photo and phone
+  /// location are attached to the row a moment after it is created.
   RealtimeChannel subscribeToLogs(void Function() onInsert) {
     return _client
         .channel('live-logs-page')
         .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
+          event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'logs',
           callback: (payload) => onInsert(),
@@ -466,28 +477,20 @@ class SupabaseService {
         .subscribe();
   }
 
-  /// Checks if a device exists for the user and returns its ID.
+  /// Returns the id of the user's cane ONLY if it is online right now, else null.
+  /// "Online" is decided on the server (my_online_device_id, see 02_online_check.sql):
+  /// is_online = true AND a heartbeat within [DeviceModel.onlineWindow]. Doing it
+  /// server-side means a wrong clock on the phone can't break the check.
+  /// [userId] is unused (the server uses the signed-in user); kept so callers don't change.
   Future<String?> getLinkedDeviceId(String userId) async {
-    // Calculate the exact time 3 minutes ago
-    final cutoff = DateTime.now().toUtc().subtract(const Duration(minutes: 3)).toIso8601String();
-
-    final shareData = await _client
-        .from('device_shares')
-        .select('devices!inner(id, last_seen_at)')
-        .eq('user_id', userId)
-        // Only log while the cane itself has heartbeated recently. (last_updated
-        // is also bumped by location writes, so it can't be used as a liveness signal.)
-        .gte('devices.last_seen_at', cutoff)
-        .limit(1) 
-        .maybeSingle();
-
-    if (shareData != null) {
-      print('=== BACKGROUND TRACKING: Device ID Retrieved ($shareData) ===');
-      final device = shareData['devices'] as Map<String, dynamic>;
-      return device['id']?.toString();
+    final res = await _client.rpc('my_online_device_id', params: {
+      'p_window_seconds': DeviceModel.onlineWindow.inSeconds,
+    });
+    if (res is String && res.isNotEmpty) {
+      print('=== BACKGROUND TRACKING: cane online ($res) ===');
+      return res;
     }
-
-    return null; // Returns null if no device exists OR if the device is older than 3 mins
+    return null; // cane offline, unpaired, or none
   }
 
   /// Inserts a new location ping into the history table

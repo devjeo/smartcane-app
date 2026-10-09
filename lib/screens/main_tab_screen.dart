@@ -47,6 +47,7 @@ class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProvider
         _logsScreenKey.currentState?.applyFilter(device: device, category: category);
       },
       clearLogsFilter: () => _logsScreenKey.currentState?.clearFilters(),
+      openLog: (id) => _logsScreenKey.currentState?.openLog(id),
     );
   }
 

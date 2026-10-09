@@ -57,6 +57,10 @@ class LogModel {
   final Color color;
   final double? lat;
   final double? lng;
+  final String eventType;      // raw event_type, shown in the details
+  final String? imagePath;     // path in the private `sos-photos` bucket
+  final String? alertType;     // 'sos' | 'fall' | 'hazard' | 'fault'
+  final DateTime? locationAt;  // when the PHONE took the location fix
 
   const LogModel({
     required this.id,
@@ -69,7 +73,15 @@ class LogModel {
     required this.color,
     this.lat,
     this.lng,
+    this.eventType = '',
+    this.imagePath,
+    this.alertType,
+    this.locationAt,
   });
+
+  bool get isSos => alertType == 'sos';
+  bool get isEmergency => eventType.toLowerCase() == 'emergency';
+  bool get hasLocation => lat != null && lng != null;
 
   /// Equivalent of formatTime(dateString) -> toLocaleTimeString hour:minute
   String get time => DateFormat('h:mm a').format(createdAt.toLocal());
@@ -81,7 +93,7 @@ class LogModel {
       id: row['id'].toString(),
       type: style.category,
       title: (row['title'] as String?) ?? (row['event_type'] as String?) ?? 'Log',
-      desc: row['message'] as String? ?? '',
+      desc: (row['message'] as String?) ?? (row['description'] as String?) ?? '',
       device: row['device_id']?.toString() ?? 'Unknown Device',
       createdAt: createdAtRaw != null
           ? DateTime.tryParse(createdAtRaw) ?? DateTime.now()
@@ -90,6 +102,12 @@ class LogModel {
       color: style.color,
       lat: (row['latitude'] as num?)?.toDouble(),
       lng: (row['longitude'] as num?)?.toDouble(),
+      eventType: (row['event_type'] as String?) ?? '',
+      imagePath: row['image_path'] as String?,
+      alertType: row['alert_type'] as String?,
+      locationAt: row['location_at'] != null
+          ? DateTime.tryParse(row['location_at'] as String)
+          : null,
     );
   }
 }
