@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../services/background_location_service.dart'
+    show stopBackgroundTracking;
 import '../../services/supabase_service.dart';
 
 class _Colors {
@@ -133,6 +135,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Future<void> _handleConfirmDeleteAccount() async {
     setState(() => _isDeleteModalVisible = false);
     try {
+      await stopBackgroundTracking();
       await _dbService.deleteAccountData();
       if (mounted) Navigator.of(context).pushReplacementNamed('/login');
     } catch (e) {

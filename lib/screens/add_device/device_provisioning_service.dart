@@ -62,8 +62,8 @@ class DeviceProvisioningService {
   }
 
   /// Asks Supabase for a one-time pairing token for the current user.
-  Future<String> createPairingToken(String deviceName) async {
-    final token = await _db.createPairingToken(deviceName);
+  Future<String> createPairingToken(String deviceName, {bool solo = false}) async {
+    final token = await _db.createPairingToken(deviceName, solo: solo);
     if (!_tokenRe.hasMatch(token)) {
       throw Exception(
         'The server returned a pairing code in an unexpected format. '

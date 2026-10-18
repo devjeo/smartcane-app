@@ -7,7 +7,7 @@ class DeviceModel {
   final String name;
   final String serial;
   final int alerts;
-  final String userRole; // 'owner' | 'viewer'
+  final String userRole; // raw device_shares.role: 'admin' (guardian) | 'user' | 'viewer'
   final DateTime? lastSeenAt;   // written ONLY by the cane's heartbeat (devices.last_seen_at)
   final int battery;
   final String location;
@@ -16,8 +16,11 @@ class DeviceModel {
   final Color userBgBase;
   final Color userColorBase;
   final String userInitials;
-  final String userName;
+  final String userName;   // the cane's USER (not the guardian); 'No user linked' if none
   final String version;
+  final String? guardianId;
+  final String? caneUserId;
+  final String guardianName;
 
   const DeviceModel({
     required this.id,
@@ -35,9 +38,20 @@ class DeviceModel {
     required this.userInitials,
     required this.userName,
     required this.version,
+    this.guardianId,
+    this.caneUserId,
+    this.guardianName = '',
   });
 
   bool get isViewer => userRole == 'viewer';
+  bool get isGuardian => userRole == 'admin' || userRole == 'owner';
+  bool get isCaneUser => userRole == 'user' || userRole == 'owner';
+  bool get isSolo => userRole == 'owner';
+  bool get hasUser => caneUserId != null;
+
+  /// 'guardian' | 'user' | 'viewer'
+  String get myRole => isGuardian ? 'guardian' : (isCaneUser ? 'user' : 'viewer');
+  String get roleLabel => isGuardian ? 'Guardian' : (isCaneUser ? 'Cane user' : 'Viewer');
 
   /// The cane heartbeats every 15 s; no heartbeat for this long = offline.
   static const onlineWindow = Duration(seconds: 50);
@@ -65,6 +79,9 @@ class DeviceModel {
         userInitials: userInitials,
         userName: userName,
         version: version,
+        guardianId: guardianId,
+        caneUserId: caneUserId,
+        guardianName: guardianName,
       );
 
   /// Builds a DeviceModel from a `device_shares` row joined with `devices`
@@ -77,21 +94,23 @@ class DeviceModel {
     required String exactAddress,
   }) {
     final d = shareRow['devices'] as Map<String, dynamic>? ?? {};
-    final profile = d['profiles'] as Map<String, dynamic>?;
+    final guardian = d['guardian'] as Map<String, dynamic>?;
+    final caneUser = d['cane_user'] as Map<String, dynamic>?;
 
     final lastSeenRaw = d['last_seen_at'] as String?;
     final lastSeen = lastSeenRaw != null ? DateTime.tryParse(lastSeenRaw) : null;
 
-    final guardianName = (profile?['full_name'] as String?)?.trim().isNotEmpty == true
-        ? profile!['full_name'] as String
-        : 'Primary Guardian';
-    final initials = guardianName
-        .split(' ')
-        .where((p) => p.isNotEmpty)
-        .map((p) => p[0])
-        .join()
-        .substring(0, guardianName.trim().split(' ').length > 1 ? 2 : 1)
-        .toUpperCase();
+    String nameOf(Map<String, dynamic>? p) {
+      final n = (p?['full_name'] as String?)?.trim() ?? '';
+      return n;
+    }
+
+    final guardianName = nameOf(guardian).isNotEmpty ? nameOf(guardian) : 'Primary Guardian';
+    final hasUser = d['user_id'] != null;
+    final userName = !hasUser
+        ? 'No user linked'
+        : (nameOf(caneUser).isNotEmpty ? nameOf(caneUser) : 'Cane user');
+    final initials = !hasUser ? '?' : _initialsOf(userName);
 
     final logsCount = (d['logs'] as List?)?.isNotEmpty == true
         ? (d['logs'][0]['count'] as int? ?? 0)
@@ -111,8 +130,18 @@ class DeviceModel {
       userBgBase: const Color(0xFFF0EFFF),
       userColorBase: AppColors.accent,
       userInitials: initials,
-      userName: guardianName,
+      userName: userName,
       version: 'v1.0.0',
+      guardianId: d['guardian_id']?.toString(),
+      caneUserId: d['user_id']?.toString(),
+      guardianName: guardianName,
     );
+  }
+
+  static String _initialsOf(String name) {
+    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts[0][0].toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
   }
 }

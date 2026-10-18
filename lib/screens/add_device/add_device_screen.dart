@@ -43,6 +43,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   final _hotspotSsidController = TextEditingController();
   final _hotspotPasswordController = TextEditingController();
   bool _showPassword = false;
+  bool _soloMode = false; // true = "I use this cane myself" (no guardian)
 
   _SetupStep _setupStep = _SetupStep.enterHotspot;
   String _formError = '';
@@ -115,7 +116,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       final nickname = _deviceNameController.text.trim().isNotEmpty
           ? _deviceNameController.text.trim()
           : 'My Smart Cane';
-      final token = await _provisioningService.createPairingToken(nickname);
+      final token = await _provisioningService.createPairingToken(nickname, solo: _soloMode);
       if (!mounted) return;
 
       final qr = _provisioningService.buildQrPayload(
@@ -200,32 +201,32 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   Future<void> _joinAsCaregiver() async {
     setState(() => _isJoining = true);
     try {
-      final caneData = await _dbService.getDeviceByShareCode(_codeController.text.toUpperCase());
+      // One server call: checks the code, limits wrong guesses, adds the
+      // viewer and clears the code.
+      final res = await _dbService.joinByShareCode(_codeController.text);
 
-      debugPrint('Search result for share code: $caneData');
-
-      if (caneData == null) {
-        if (mounted) await _alert('Error', 'Invalid Share Code. Please check the code and try again.');
-        setState(() => _isJoining = false);
-        return;
-      }
-
-      try {
-        await _dbService.joinAsCaregiver(caneData['id']);
-      } catch (shareError) {
-        debugPrint('REAL INSERT ERROR: $shareError');
-        if (mounted) await _alert('Error', 'You are already linked to this device!');
-        setState(() => _isJoining = false);
+      if (res['ok'] != true) {
+        final reason = res['reason'];
+        final message = reason == 'rate_limited'
+            ? 'Too many attempts. Please wait a few minutes and try again.'
+            : reason == 'already_linked'
+                ? 'You are already linked to this device!'
+                : 'Invalid Share Code. Please check the code and try again.';
+        if (mounted) await _alert('Error', message);
+        if (mounted) setState(() => _isJoining = false);
         return;
       }
 
       if (mounted) {
-        await _alert('Success!', 'You are now a viewer for ${caneData['name']}');
+        await _alert('Success!', 'You are now a viewer for ${res['name']}');
         if (mounted) Navigator.of(context).pushReplacementNamed('/');
       }
     } catch (e) {
       debugPrint('$e');
-      setState(() => _isJoining = false);
+      if (mounted) {
+        await _alert('Error', 'Could not join. Check your connection and try again.');
+        setState(() => _isJoining = false);
+      }
     }
   }
 
@@ -345,7 +346,18 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
             controller: _deviceNameController,
             hint: "e.g., Patient's Cane",
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 6),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('I use this cane myself'),
+            subtitle: const Text(
+              'No guardian needed. In an emergency your phone will call '
+              'the trusted contacts you add.',
+            ),
+            value: _soloMode,
+            onChanged: (v) => setState(() => _soloMode = v),
+          ),
+          const SizedBox(height: 8),
           _LabeledField(
             label: 'Hotspot Name',
             icon: Icons.wifi_tethering,

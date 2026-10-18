@@ -289,7 +289,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   @override
   Widget build(BuildContext context) {
     final insets = MediaQuery.of(context).padding;
-    final isAdmin = widget.userRole == 'admin';
+    final isAdmin = widget.userRole == 'admin' || widget.userRole == 'owner';
 
     return Scaffold(
       body: Stack(
@@ -395,7 +395,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       _SensorItem(icon: Icons.battery_charging_full_outlined, iconColor: _isOnline ? const Color(0xFF22C55E) : const Color(0xFF64748B), label: 'Battery', value: '$_battery%'),
-                      const _SensorItem(icon: Icons.camera_alt_outlined, iconColor: Color(0xFF007BFF), label: 'AI Vision', value: 'Active'),
                       const _SensorItem(icon: Icons.directions_walk_outlined, iconColor: Color(0xFF007BFF), label: 'Status', value: 'Walking'),
                     ],
                   ),

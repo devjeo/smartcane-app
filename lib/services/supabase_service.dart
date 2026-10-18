@@ -49,8 +49,13 @@ class SupabaseService {
             last_updated,
             last_seen_at,
             guardian_id,
+            user_id,
             logs (count),
-            profiles (
+            guardian:profiles!devices_guardian_id_fkey (
+              id,
+              full_name
+            ),
+            cane_user:profiles!devices_user_id_fkey (
               id,
               full_name
             )
@@ -199,9 +204,9 @@ class SupabaseService {
     final user = currentUser;
     if (user != null) {
       try {
-        await _client
-            .from('profiles')
-            .update({'expo_push_token': null}).eq('id', user.id);
+        // Phase 8: the push token column is hidden from the app, so it is
+        // cleared through the server function (null = forget this phone).
+        await _client.rpc('save_push_token', params: {'p_token': null});
       } catch (_) {}
     }
     await _client.auth.signOut();
@@ -219,31 +224,10 @@ class SupabaseService {
 
   /// Verifies a device exists and pairs it to the current user as an admin
   Future<void> pairDevice(String serial, String deviceName) async {
-    final user = currentUser;
-    if (user == null)
-      throw Exception('You must be logged in to pair a device.');
-
-    final deviceCheck = await _client
-        .from('devices')
-        .select('guardian_id')
-        .eq('id', serial)
-        .maybeSingle();
-
-    if (deviceCheck == null) {
-      throw Exception('Invalid Serial Number. This Smart Cane does not exist.');
-    }
-
-    await _client.from('devices').update({
-      'guardian_id': user.id,
-      'name': deviceName.isNotEmpty ? deviceName : 'My Smart Cane',
-      'is_online': true,
-    }).eq('id', serial);
-
-    await _client.from('device_shares').insert({
-      'device_id': serial,
-      'user_id': user.id,
-      'role': 'admin',
-    });
+    // Phase 8: closed on purpose. Taking a cane by its serial number let anyone
+    // grab a cane that had no guardian. A cane is now claimed only through the
+    // QR code (create_pairing_token -> claim_device_with_token).
+    throw Exception('Pairing by serial number is no longer supported. Use the QR code.');
   }
 
   // ---------- QR pairing (matches cane_boot.py on the Raspberry Pi) ----------
@@ -252,13 +236,14 @@ class SupabaseService {
   /// The token goes into the QR code the cane scans; the cane later trades it
   /// (claim_device_with_token) to attach itself to this account, so the user
   /// id never has to be put in the QR.
-  Future<String> createPairingToken(String deviceName) async {
+  Future<String> createPairingToken(String deviceName, {bool solo = false}) async {
     final user = currentUser;
     if (user == null) {
       throw Exception('You must be logged in to pair a device.');
     }
     final res = await _client.rpc('create_pairing_token', params: {
       'p_device_name': deviceName,
+      'p_solo': solo,
     });
     final token = res is Map ? res['token'] : res;
     if (token is! String || token.isEmpty) {
@@ -278,29 +263,108 @@ class SupabaseService {
     return row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
   }
 
-  /// Looks up a device by its 6-digit share code
-  Future<Map<String, dynamic>?> getDeviceByShareCode(String code) async {
-    return await _client
-        .from('devices')
-        .select('id, name')
-        .eq('share_code', code)
-        .maybeSingle();
+  // ---------- Roles: link a cane user (Phase 1 SQL functions) ----------
+
+  /// The future USER's phone asks for a single-use token (valid 5 min).
+  /// It goes into the QR the guardian scans.
+  Future<String> createUserLinkToken() async {
+    final res = await _client.rpc('create_user_link_token');
+    final token = res is Map ? res['token'] : res;
+    if (token is! String || token.isEmpty) {
+      throw Exception('Could not create a link code. Please try again.');
+    }
+    return token;
   }
 
-  /// Joins an existing device as a caregiver (viewer) and clears the share code
-  Future<void> joinAsCaregiver(String deviceId) async {
-    final user = currentUser;
-    if (user == null) throw Exception('Not authenticated');
+  /// Polled by the user's phone: `claimed`, `expired`, `device_id`, `device_name`.
+  Future<Map<String, dynamic>> userLinkStatus(String token) async {
+    final res = await _client.rpc('user_link_status', params: {'p_token': token});
+    final row = res is List ? (res.isEmpty ? null : res.first) : res;
+    return row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
+  }
 
-    await _client.from('device_shares').insert({
-      'device_id': deviceId,
-      'user_id': user.id,
-      'role': 'viewer',
+  /// Guardian side, after scanning the user's QR.
+  Future<Map<String, dynamic>> claimUserLink(String deviceId, String token) async {
+    final res = await _client.rpc('claim_user_link', params: {
+      'p_device_id': deviceId,
+      'p_token': token,
     });
+    final row = res is List ? (res.isEmpty ? null : res.first) : res;
+    return row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
+  }
 
-    await _client
+  Future<void> swapGuardianUser(String deviceId) async {
+    await _client.rpc('swap_guardian_user', params: {'p_device_id': deviceId});
+  }
+
+  Future<void> unlinkUser(String deviceId) async {
+    await _client.rpc('unlink_user', params: {'p_device_id': deviceId});
+  }
+
+  /// Raw share roles ('admin' | 'user' | 'viewer') of every active cane the
+  /// account has. Drives which tabs the home screen shows.
+  Future<List<String>> fetchMyShareRoles() async {
+    final user = currentUser;
+    if (user == null) return [];
+    final data = await _client
+        .from('device_shares')
+        .select('role, devices!inner (guardian_id)')
+        .eq('user_id', user.id)
+        .not('devices.guardian_id', 'is', null);
+    // 'owner' (solo user) acts as both guardian and cane user.
+    return (data as List).expand((r) {
+      final role = (r as Map)['role'].toString();
+      return role == 'owner' ? const ['admin', 'user'] : [role];
+    }).toList();
+  }
+
+  /// Canes the current account carries (share role 'user'):
+  /// `{id, name, battery_level, last_seen_at, guardian: {full_name}}`.
+  Future<List<Map<String, dynamic>>> fetchMyUserCanes() async {
+    final user = currentUser;
+    if (user == null) return [];
+    final data = await _client
+        .from('device_shares')
+        .select('''
+          devices!inner (
+            id,
+            name,
+            battery_level,
+            last_seen_at,
+            guardian_id,
+            guardian:profiles!devices_guardian_id_fkey (full_name)
+          )
+        ''')
+        .eq('user_id', user.id)
+        .inFilter('role', ['user', 'owner'])
+        .not('devices.guardian_id', 'is', null);
+    return (data as List)
+        .map((r) => Map<String, dynamic>.from((r as Map)['devices'] as Map))
+        .toList();
+  }
+
+  /// Current cane user of a device: `{user_id, cane_user: {id, full_name}}`
+  /// (`user_id` is null when nobody is linked). Used by Device Settings.
+  Future<Map<String, dynamic>?> fetchCaneUser(String deviceId) async {
+    final row = await _client
         .from('devices')
-        .update({'share_code': null}).eq('id', deviceId);
+        .select('user_id, guardian_id, cane_user:profiles!devices_user_id_fkey (id, full_name)')
+        .eq('id', deviceId)
+        .maybeSingle();
+    return row == null ? null : Map<String, dynamic>.from(row);
+  }
+
+  /// Joins a cane as a caregiver (viewer) with its share code, in ONE server
+  /// call (join_device_by_code). The server checks the code, limits wrong
+  /// guesses and clears the code after use. Returns
+  /// `{ok: true, device_id, name}` or `{ok: false, reason}` where reason is
+  /// `invalid_code`, `rate_limited` or `already_linked`.
+  Future<Map<String, dynamic>> joinByShareCode(String code) async {
+    final res = await _client.rpc('join_device_by_code', params: {
+      'p_code': code,
+    });
+    final row = res is List ? (res.isEmpty ? null : res.first) : res;
+    return row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
   }
 
   // ---------- Device Settings Screen ----------
@@ -322,11 +386,11 @@ class SupabaseService {
         .update({'light_mode': isLightMode}).eq('id', deviceId);
   }
 
-  /// Unpairs a device by removing the guardian_id
+  /// Unpairs a device (server function unpair_device: guardian only). It also
+  /// removes every share, the cane's secret and the share code, so the cane
+  /// must be paired again with a QR code.
   Future<void> unpairDevice(String deviceId) async {
-    await _client
-        .from('devices')
-        .update({'guardian_id': null}).eq('id', deviceId);
+    await _client.rpc('unpair_device', params: {'p_device_id': deviceId});
   }
 
   /// Generates and saves a new share code for a device
@@ -344,7 +408,7 @@ class SupabaseService {
     if (user == null) return null;
     return await _client
         .from('profiles')
-        .select('*')
+        .select('id, full_name, phone_number, location, role, email')
         .eq('id', user.id)
         .maybeSingle();
   }
@@ -494,6 +558,28 @@ class SupabaseService {
   }
 
   /// Inserts a new location ping into the history table
+  /// Newest phone location ping per cane (location_history.created_at).
+  /// Only the cane USER's phone writes these, so this is a "is the user's
+  /// phone alive and reporting" signal. Missing key = no ping on record.
+  Future<Map<String, DateTime>> fetchLastPhonePings(List<String> deviceIds) async {
+    final out = <String, DateTime>{};
+    await Future.wait(deviceIds.map((id) async {
+      try {
+        final rows = await _client
+            .from('location_history')
+            .select('created_at')
+            .eq('device_id', id)
+            .order('created_at', ascending: false)
+            .limit(1);
+        if ((rows as List).isNotEmpty) {
+          final t = DateTime.tryParse(rows.first['created_at'] as String);
+          if (t != null) out[id] = t.toLocal();
+        }
+      } catch (_) {}
+    }));
+    return out;
+  }
+
   Future<void> logLocationPing({
     required String deviceId,
     required String sessionId,

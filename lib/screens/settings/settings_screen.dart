@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:ionicons_plus/ionicons_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../../services/background_location_service.dart'
+    show stopBackgroundTracking;
+import '../../services/main_tab_controller.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 
@@ -19,8 +21,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _profileLocation = '...';
   String _initials = '';
 
-  bool _pushNotifications = true;
-  bool _emailAlerts = false;
 
   @override
   void initState() {
@@ -73,6 +73,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (confirmed != true) return;
 
     try {
+      // Stop the tracking service first: it holds its own copy of the session.
+      await stopBackgroundTracking();
       await SupabaseService.instance.signOut();
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('@user_token');
@@ -153,38 +155,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 30),
 
-            _SectionTitle('App Preferences'),
+            _SectionTitle('Cane User'),
             _SectionCard(children: [
-              _SettingRow(
-                icon: Ionicons.notifications_outline,
-                label: 'Push Notifications',
-                value: _pushNotifications,
-                onChanged: (v) => setState(() => _pushNotifications = v),
+              _LinkRow(
+                icon: Ionicons.people,
+                label: 'Link me as a cane user',
+                onTap: () async {
+                  await Navigator.of(context).pushNamed('/link-as-user');
+                  MainTabController.rolesChanged.value++;
+                },
               ),
-              const _RowDivider(),
-              _SettingRow(
-                icon: Ionicons.mail_outline,
-                label: 'Email Alerts',
-                value: _emailAlerts,
-                onChanged: (v) => setState(() => _emailAlerts = v),
+            ]),
+            const SizedBox(height: 25),
+
+            _SectionTitle('Emergency'),
+            _SectionCard(children: [
+              _LinkRow(
+                icon: Icons.contact_phone_outlined,
+                label: 'Emergency contacts',
+                onTap: () => Navigator.of(context).pushNamed('/emergency-contacts'),
               ),
             ]),
             const SizedBox(height: 25),
 
             _SectionTitle('Support'),
             _SectionCard(children: [
-              _LinkRow(
-                icon: Ionicons.help_circle_outline,
-                label: 'Help Center',
-                onTap: () => launchUrl(Uri.parse('https://support.google.com')),
-              ),
-              const _RowDivider(),
-              _LinkRow(
-                icon: Ionicons.document_text_outline,
-                label: 'Terms of Service',
-                onTap: () => launchUrl(Uri.parse('https://policies.google.com/terms')),
-              ),
-              const _RowDivider(),
               _LinkRow(
                 icon: Ionicons.information_circle_outline,
                 label: 'About SmartCaneApp',
@@ -258,68 +253,6 @@ class _SectionCard extends StatelessWidget {
         border: Border.all(color: AppColors.border),
       ),
       child: Column(children: children),
-    );
-  }
-}
-
-class _RowDivider extends StatelessWidget {
-  const _RowDivider();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(left: 62),
-      child: Divider(height: 1, color: AppColors.border),
-    );
-  }
-}
-
-/// Equivalent of `<SettingRow type="toggle" .../>`
-class _SettingRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _SettingRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 15),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                alignment: Alignment.center,
-                child: Icon(icon, size: 20, color: AppColors.textSub),
-              ),
-              const SizedBox(width: 15),
-              Text(label, style: const TextStyle(fontSize: 16, color: AppColors.textMain, fontWeight: FontWeight.w500)),
-            ],
-          ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeColor: Colors.white,
-            activeTrackColor: AppColors.success,
-            inactiveTrackColor: const Color(0xFFCBD5E1),
-          ),
-        ],
-      ),
     );
   }
 }

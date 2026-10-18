@@ -29,6 +29,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     with SingleTickerProviderStateMixin, RouteAware {
   List<DeviceModel> _devices = [];
   List<PendingDevice> _pendingDevices = [];
+  Map<String, DateTime> _phonePings = {};
+  static const _pingStale = Duration(minutes: 2);
   bool _refreshing = false;
   bool _showLoadingBanner = true;
 
@@ -54,11 +56,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     _fetchDevices();
     _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _refreshStatus());
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (SupabaseService.instance.currentUser != null) {
-        startBackgroundTracking();
-      }
-    });
+    // Background tracking is started by MainTabScreen, and only for accounts
+    // that carry a cane (the cane USER's phone is the only location source).
   }
 
   @override
@@ -165,8 +164,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     try {
       final seen = await SupabaseService.instance
           .fetchLastSeen(_devices.map((d) => d.id).toList());
+      // Guardian only: is the cane user's phone still pinging?
+      final watch = _devices.where((d) => d.isGuardian && d.hasUser).map((d) => d.id).toList();
+      final pings = watch.isEmpty
+          ? <String, DateTime>{}
+          : await SupabaseService.instance.fetchLastPhonePings(watch);
       if (!mounted) return;
       setState(() {
+        _phonePings = pings;
         _devices = _devices
             .map((d) => seen.containsKey(d.id) ? d.withLastSeen(seen[d.id]) : d)
             .toList();
@@ -174,6 +179,17 @@ class _DashboardScreenState extends State<DashboardScreen>
     } catch (_) {
       if (mounted) setState(() {});   // still re-evaluate with what we have
     }
+  }
+
+  /// Shown to the guardian when the cane is online but the user's phone has
+  /// not reported for 2 minutes (the phone pings every 20 s while ready).
+  String? _callWarning(DeviceModel d) {
+    if (!d.isGuardian || !d.hasUser || !d.isOnline) return null;
+    final last = _phonePings[d.id];
+    final stale = last == null || DateTime.now().difference(last) > _pingStale;
+    if (!stale) return null;
+    return "${d.userName}'s phone has not reported for over 2 minutes. "
+        "An SOS call may not connect. Ask them to open the SmartCane app.";
   }
 
   Future<void> _onRefresh() async {
@@ -310,6 +326,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           DeviceCard(
                             key: ValueKey(device.id),
                             device: device,
+                            callWarning: _callWarning(device),
                             onTap: () => Navigator.of(context)
                                 .pushNamed('/tracker', arguments: {
                               'id': device.id,

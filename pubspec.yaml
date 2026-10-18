@@ -44,6 +44,19 @@ dependencies:
   network_info_plus: ^8.2.0
   qr_flutter: ^4.1.0
 
+  # Guardian scans the cane user's QR code
+  mobile_scanner: ^7.0.0
+  permission_handler: ^11.3.1
+  flutter_webrtc: ^1.6.2+hotfix.4
+  flutter_callkit_incoming: ^3.1.6
+  flutter_tts: ^4.2.5
+  wakelock_plus: ^1.8.1
+
+  # SOS contact ladder (solo mode): dial, text, and detect call end
+  android_intent_plus: ^5.0.0
+  another_telephony: ^0.4.0
+  phone_state: ^3.0.0
+
 
 dev_dependencies:
   flutter_test:

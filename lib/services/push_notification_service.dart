@@ -1,5 +1,6 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'call_ring_service.dart';
 import 'main_tab_controller.dart';
 import 'supabase_service.dart';
 
@@ -117,6 +118,13 @@ class PushNotificationService {
   }
 
   Future<void> _onForegroundMessage(RemoteMessage message) async {
+    // Emergency-call data pushes (incoming_call / call_ended) have no
+    // notification block: they ring the phone instead of showing a banner.
+    if (message.data['type'] == 'start_sos' ||
+        (message.data['type'] != null && message.data['call_id'] != null)) {
+      await CallRingService.handleFcmData(message.data);
+      return;
+    }
     final notification = message.notification;
     if (notification == null) return;
 

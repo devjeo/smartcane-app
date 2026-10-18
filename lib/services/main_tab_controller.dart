@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 /// Lets any screen (e.g. a device card's alert badge on the Dashboard tab)
 /// tell the tab shell (`MainTabScreen`) to switch tabs and/or update the
 /// Logs tab's filter — without pushing a new route. This is what makes the
@@ -9,6 +11,10 @@
 class MainTabController {
   MainTabController._();
   static final MainTabController instance = MainTabController._();
+
+  /// Bump to make the tab shell re-check the account's roles (e.g. after
+  /// linking as a cane user) so the "My Cane" tab appears/disappears.
+  static final ValueNotifier<int> rolesChanged = ValueNotifier<int>(0);
 
   void Function(int index)? _setTabIndex;
   void Function({String? device, String? category})? _applyLogsFilter;

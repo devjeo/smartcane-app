@@ -1,7 +1,9 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
+import '../scan_user_qr/scan_user_qr_screen.dart';
 
 class _Colors {
   static const bg = Color(0xFFF8FAFC);
@@ -29,14 +31,16 @@ class DeviceSettingsScreen extends StatefulWidget {
 
 class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
   bool _isDeleteModalVisible = false;
-  bool _aiVision = true;
-  bool _laserAlerts = true;
-  bool _highSensitivity = false;
   bool _lightMode = false;
-  bool _audioFeedback = true;
   bool _geofencing = true;
   bool _isUnpairing = false;
   String? _activeShareCode;
+  bool _hasUser = false;
+  // Solo cane: the owner is both guardian and cane user, so there is nobody
+  // to link, replace, swap with or unlink.
+  bool _isSolo = false;
+  String _caneUserName = '';
+  bool _roleBusy = false;
 
   final _dbService = SupabaseService.instance;
 
@@ -46,6 +50,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
   void initState() {
     super.initState();
     _fetchDeviceSettings();
+    _loadCaneUser();
   }
 
   Future<void> _fetchDeviceSettings() async {
@@ -84,7 +89,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
 
   Future<void> _generateShareCode() async {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final rand = Random();
+    final rand = Random.secure();
     final newCode = List.generate(6, (_) => chars[rand.nextInt(chars.length)]).join().toUpperCase();
 
     await _dbService.updateDeviceShareCode(widget.id, newCode);
@@ -96,6 +101,103 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       await Clipboard.setData(ClipboardData(text: _activeShareCode!));
       if (mounted) await _alert('Copied!', 'Share code copied to clipboard. You can now paste it in a message.');
     }
+  }
+
+  Future<void> _loadCaneUser() async {
+    try {
+      final row = await _dbService.fetchCaneUser(widget.id);
+      if (!mounted || row == null) return;
+      final profile = row['cane_user'] as Map?;
+      final name = (profile?['full_name'] as String?)?.trim() ?? '';
+      setState(() {
+        _hasUser = row['user_id'] != null;
+        _isSolo = row['user_id'] != null && row['user_id'] == row['guardian_id'];
+        _caneUserName = name.isNotEmpty ? name : 'Cane user';
+      });
+    } catch (_) {}
+  }
+
+  String _errText(Object e) {
+    final raw = e is PostgrestException ? e.message : e.toString();
+    return raw.replaceFirst('Exception: ', '');
+  }
+
+  Future<bool> _confirm(String title, String message, String confirmLabel,
+      {bool destructive = false}) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(confirmLabel,
+                style: TextStyle(color: destructive ? _Colors.alert : _Colors.primary)),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<void> _scanUser() async {
+    if (_hasUser &&
+        !await _confirm('Replace cane user?',
+            '$_caneUserName will stop being the user of $_deviceName and the new person will take over.',
+            'Continue')) {
+      return;
+    }
+    if (!mounted) return;
+    final result = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(builder: (_) => ScanUserQrScreen(deviceId: widget.id)),
+    );
+    if (result == null || !mounted) return;
+    await _loadCaneUser();
+    if (mounted) {
+      await _alert('User linked',
+          '${result['user_name'] ?? 'The person'} is now the user of $_deviceName.');
+    }
+  }
+
+  Future<void> _swapRoles() async {
+    final ok = await _confirm(
+      'Swap roles?',
+      'You will become the cane user and $_caneUserName will become the guardian of $_deviceName. '
+          'You will lose guardian controls for this cane.',
+      'Swap',
+    );
+    if (!ok) return;
+    setState(() => _roleBusy = true);
+    try {
+      await _dbService.swapGuardianUser(widget.id);
+      if (!mounted) return;
+      await _alert('Roles swapped',
+          '$_caneUserName is now the guardian of $_deviceName and you are the cane user.');
+      if (mounted) Navigator.of(context).pushReplacementNamed('/');
+    } catch (e) {
+      if (mounted) await _alert('Could not swap', _errText(e));
+      if (mounted) setState(() => _roleBusy = false);
+    }
+  }
+
+  Future<void> _unlinkUser() async {
+    final ok = await _confirm(
+      'Unlink user?',
+      '$_caneUserName will no longer be the user of $_deviceName. Emergency calls will not work until a new user is linked.',
+      'Unlink',
+      destructive: true,
+    );
+    if (!ok) return;
+    setState(() => _roleBusy = true);
+    try {
+      await _dbService.unlinkUser(widget.id);
+      await _loadCaneUser();
+    } catch (e) {
+      if (mounted) await _alert('Could not unlink', _errText(e));
+    }
+    if (mounted) setState(() => _roleBusy = false);
   }
 
   Future<void> _alert(String title, String message) {
@@ -136,17 +238,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
                     children: [
                       const _SectionTitle('Hardware Modules'),
                       _SectionCard(children: [
-                        _SettingRow(icon: Icons.camera_alt_outlined, label: 'AI Object Recognition', description: 'Uses camera to identify obstacles', value: _aiVision, onChanged: (v) => setState(() => _aiVision = v)),
-                        const _RowDivider(),
-                        _SettingRow(icon: Icons.qr_code_scanner_outlined, label: 'Laser Sensors', description: 'Emits lasers for drop-off detection', value: _laserAlerts, onChanged: (v) => setState(() => _laserAlerts = v)),
-                        const _RowDivider(),
-                        _SettingRow(icon: Icons.tune_outlined, label: 'High Sensitivity Mode', description: 'Increases laser detection range', value: _highSensitivity, onChanged: (v) => setState(() => _highSensitivity = v)),
                         _SettingRow(icon: Icons.lightbulb_outline, label: 'Light Mode', description: 'On = better for dark places, Off = saves battery in well-lit areas', value: _lightMode, onChanged: _handleLightModeChange),
-                      ]),
-
-                      const _SectionTitle('Cane Feedback'),
-                      _SectionCard(children: [
-                        _SettingRow(icon: Icons.volume_up_outlined, label: 'Audio Prompts', description: 'Speaks detected objects aloud', value: _audioFeedback, onChanged: (v) => setState(() => _audioFeedback = v)),
                       ]),
 
                       const _SectionTitle('Safety Zones'),
@@ -192,6 +284,121 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
                           ),
                         ),
                       ]),
+
+                      const _SectionTitle('Walking Routes'),
+                      _SectionCard(children: [
+                        InkWell(
+                          onTap: () => Navigator.of(context).pushNamed('/routes', arguments: {
+                            'id': widget.id,
+                            'name': widget.name,
+                            'lat': widget.lat,
+                            'lng': widget.lng,
+                          }),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 15, horizontal: 15),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 36,
+                                      height: 36,
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(color: Color(0xFFE0F2FE), borderRadius: BorderRadius.all(Radius.circular(10))),
+                                        child: Icon(Icons.route, size: 20, color: _Colors.primary),
+                                      ),
+                                    ),
+                                    SizedBox(width: 15),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text('Manage Routes', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _Colors.textMain)),
+                                        SizedBox(height: 2),
+                                        Text('Saved walks with turn-by-turn steps', style: TextStyle(fontSize: 12, color: _Colors.textSub)),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                Icon(Icons.chevron_right, size: 20, color: _Colors.border),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ]),
+
+                      if (_isSolo) ...[
+                        const _SectionTitle('Cane User'),
+                        _SectionCard(children: [
+                          const Padding(
+                            padding: EdgeInsets.all(15),
+                            child: Row(
+                              children: [
+                                Icon(Icons.person_outline, size: 24, color: _Colors.textSub),
+                                SizedBox(width: 15),
+                                Expanded(
+                                  child: Text(
+                                    'You use this cane yourself. Emergency contacts are managed in Settings > Emergency contacts.',
+                                    style: TextStyle(fontSize: 13, color: _Colors.textSub, height: 1.4),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ]),
+                      ] else ...[
+                      const _SectionTitle('Cane User'),
+                      _SectionCard(children: [
+                        Padding(
+                          padding: const EdgeInsets.all(15),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.person_outline, size: 24, color: _Colors.textSub),
+                              const SizedBox(width: 15),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(_hasUser ? _caneUserName : 'No user linked',
+                                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _Colors.textMain)),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                        _hasUser
+                                            ? 'Carries this cane. Their phone shares the cane location.'
+                                            : 'Ask the person who carries the cane to open Settings > Link me as a cane user, then scan their QR.',
+                                        style: const TextStyle(fontSize: 12, color: _Colors.textSub, height: 1.4)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const _RowDivider(),
+                        _ActionRow(
+                          icon: Icons.qr_code_scanner,
+                          label: _hasUser ? 'Scan QR to replace user' : 'Scan QR to link user',
+                          enabled: !_roleBusy,
+                          onTap: _scanUser,
+                        ),
+                        if (_hasUser) ...[
+                          const _RowDivider(),
+                          _ActionRow(
+                            icon: Icons.swap_horiz,
+                            label: 'Swap roles with $_caneUserName',
+                            enabled: !_roleBusy,
+                            onTap: _swapRoles,
+                          ),
+                          const _RowDivider(),
+                          _ActionRow(
+                            icon: Icons.person_remove_outlined,
+                            label: 'Unlink user',
+                            destructive: true,
+                            enabled: !_roleBusy,
+                            onTap: _unlinkUser,
+                          ),
+                        ],
+                      ]),
+                      ],
 
                       // Caregiver access
                       Container(
@@ -464,6 +671,46 @@ class _RemoveDeviceModal extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool destructive;
+  final bool enabled;
+
+  const _ActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.destructive = false,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = destructive ? _Colors.alert : _Colors.primary;
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.5,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 15),
+          child: Row(
+            children: [
+              Icon(icon, size: 22, color: color),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Text(label,
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: color)),
+              ),
+            ],
+          ),
         ),
       ),
     );

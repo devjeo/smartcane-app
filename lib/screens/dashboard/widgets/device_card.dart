@@ -14,11 +14,16 @@ class DeviceCard extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onAlertsTap;
 
+  /// Guardian-side warning: the cane user's phone is not reporting, so an
+  /// SOS call would not connect. Null = no warning.
+  final String? callWarning;
+
   const DeviceCard({
     super.key,
     required this.device,
     this.onTap,
     this.onAlertsTap,
+    this.callWarning,
   });
 
   @override
@@ -65,7 +70,7 @@ class DeviceCard extends StatelessWidget {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            if (device.isViewer) ...[
+                            ...[
                               const SizedBox(width: 8),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -74,7 +79,7 @@ class DeviceCard extends StatelessWidget {
                                   borderRadius: BorderRadius.circular(4),
                                   border: Border.all(color: AppColors.viewerTagBorder),
                                 ),
-                                child: const Text('VIEWER',
+                                child: Text(device.roleLabel.toUpperCase(),
                                     style: TextStyle(
                                         fontSize: 10, fontWeight: FontWeight.w900, color: AppColors.accent)),
                               ),
@@ -151,6 +156,31 @@ class DeviceCard extends StatelessWidget {
                   ],
                 ),
               ),
+
+              if (callWarning != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.phone_disabled, size: 16, color: Color(0xFF92400E)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(callWarning!,
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF92400E), height: 1.4)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
 
               const SizedBox(height: 15),
 
