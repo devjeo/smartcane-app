@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../models/geo_point.dart';
+import '../../services/danger_zones.dart';
 import '../../services/route_service.dart';
 import '../../theme/app_colors.dart';
 import 'place_search_sheet.dart';
@@ -36,7 +37,9 @@ class _DestinationEditorScreenState extends State<DestinationEditorScreen> {
   final _service = RouteService.instance;
   final _nameCtrl = TextEditingController();
   GoogleMapController? _map;
-  late final GeoPoint _center;
+  late GeoPoint _center;
+  GeoPoint? _fresh; // newest cane position, loaded when the screen opens
+  DangerZones _zones = DangerZones.none;
 
   GeoPoint? _dest;
   String _destLabel = '';
@@ -53,6 +56,19 @@ class _DestinationEditorScreenState extends State<DestinationEditorScreen> {
     super.initState();
     _center = GeoPoint(widget.lat ?? 14.1153, widget.lng ?? 122.9566);
     if (_isEdit) _loadExisting();
+    _service.fetchDangerZones(widget.deviceId).then((z) {
+      if (mounted) setState(() => _zones = z);
+    }).catchError((_) {});
+    // The position passed in is only a snapshot from an earlier screen:
+    // ask for the newest one so the map opens where the cane is now.
+    _service.fetchDeviceLocation(widget.deviceId).then((p) {
+      if (p == null || !mounted) return;
+      _fresh = p;
+      _center = p;
+      if (_map != null && _dest == null && !_isEdit) {
+        _map!.animateCamera(CameraUpdate.newLatLngZoom(LatLng(p.lat, p.lng), 16));
+      }
+    }).catchError((_) {});
   }
 
   @override
@@ -93,6 +109,10 @@ class _DestinationEditorScreenState extends State<DestinationEditorScreen> {
   }
 
   void _setDestination(GeoPoint p, String label) {
+    if (_zones.contains(p)) {
+      showRouteAlert(context, 'Danger zone', RouteService.dangerPinMessage);
+      return;
+    }
     setState(() {
       _dest = p;
       _destLabel = label;
@@ -244,7 +264,23 @@ class _DestinationEditorScreenState extends State<DestinationEditorScreen> {
                         target: LatLng(_dest?.lat ?? _center.lat, _dest?.lng ?? _center.lng),
                         zoom: 15,
                       ),
-                      onMapCreated: (c) => _map = c,
+                      onMapCreated: (c) {
+                        _map = c;
+                        final f = _fresh;
+                        if (f != null && _dest == null && !_isEdit) {
+                          c.moveCamera(CameraUpdate.newLatLngZoom(LatLng(f.lat, f.lng), 16));
+                        }
+                      },
+                      polygons: {
+                        for (var i = 0; i < _zones.polygons.length; i++)
+                          Polygon(
+                            polygonId: PolygonId('danger-$i'),
+                            points: [for (final g in _zones.polygons[i]) LatLng(g.lat, g.lng)],
+                            fillColor: AppColors.alert.withOpacity(0.25),
+                            strokeColor: AppColors.alert,
+                            strokeWidth: 2,
+                          ),
+                      },
                       onTap: _onMapTap,
                       markers: {
                         if (d != null)

@@ -23,6 +23,7 @@ import 'screens/placeholder_screen.dart';
 import 'theme/app_colors.dart';
 import 'services/background_location_service.dart';
 import 'services/call_ring_service.dart';
+import 'services/session_guard.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -51,6 +52,7 @@ Future<void> main() async {
 
   runApp(const SmartCaneApp());
   CallRingService.instance.start();
+  SessionGuard.instance.start();
 }
 
 class SmartCaneApp extends StatelessWidget {

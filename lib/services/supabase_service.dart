@@ -464,8 +464,17 @@ class SupabaseService {
 
   /// Signs in a user with an email and password.
   Future<AuthResponse> signInWithPassword(String email, String password) async {
-    return await _client.auth
+    final res = await _client.auth
         .signInWithPassword(email: email, password: password);
+
+    // One phone per account: end every other session of this account.
+    // The session on this phone stays valid.
+    try {
+      await _client.auth.signOut(scope: SignOutScope.others);
+    } catch (_) {
+      // Never block a login because the cleanup failed.
+    }
+    return res;
   }
 
   /// Registers a new user with an email, password, and their full name.

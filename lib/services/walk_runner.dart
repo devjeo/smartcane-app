@@ -201,6 +201,7 @@ class WalkRunner {
           deviceId: deviceId,
           origin: GeoPoint(origin.latitude, origin.longitude),
           destination: route.end,
+          alternatives: true, // lets a route that avoids danger zones win
         );
         if (w.finishing || _walk != w) return;
         final pr = plans.first;
@@ -218,6 +219,18 @@ class WalkRunner {
       if (path == null || path.length < 2) {
         await _fail(w, 'This route could not be loaded.');
         return;
+      }
+      // Saved lines (fixed routes) are checked again here: a danger zone may
+      // have been drawn after the route was made. Fresh plans were already
+      // filtered by planWalkingRoute.
+      if (!w.fromPlan) {
+        final zones = await RouteService.instance.fetchDangerZones(deviceId);
+        if (w.finishing || _walk != w) return;
+        if (zones.pathHits(path)) {
+          await _fail(w,
+              'This route now goes through a danger zone, so the walk cannot start. Ask your guardian to change the route.');
+          return;
+        }
       }
       if (w.finishing || _walk != w) return;
       w.total0 = (total ?? 0) > 0 ? total! : 0;

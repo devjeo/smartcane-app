@@ -350,7 +350,16 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         onChanged: _setSolo,
         title: const Text('I use this cane myself (no guardian)',
             style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.textMain)),
-        subtitle: const Text('Your phone will call your contacts instead of a guardian app.'),
+        subtitle: Text(
+          d.isSolo
+              ? 'Solo mode is ON. Your phone calls and texts the contacts below. '
+                  'No separate guardian is linked, so no other app gets SOS alerts. '
+                  'You still get a notification on this phone.'
+              : 'Turn this on if nobody else watches this cane. You become both '
+                  'guardian and cane user, and your phone calls the contacts below '
+                  'instead of a guardian app. A separate guardian will stop getting '
+                  'SOS alerts for this cane.',
+        ),
       ),
     );
   }

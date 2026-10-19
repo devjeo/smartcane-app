@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../models/geo_point.dart';
 import '../../models/route_model.dart';
+import '../../services/danger_zones.dart';
 import '../../services/route_service.dart';
 import '../../services/turn_builder.dart';
 import '../../theme/app_colors.dart';
@@ -45,7 +46,9 @@ class RouteEditorScreen extends StatefulWidget {
 class _RouteEditorScreenState extends State<RouteEditorScreen> {
   final _service = RouteService.instance;
   GoogleMapController? _map;
-  late final GeoPoint _center;
+  late GeoPoint _center;
+  GeoPoint? _fresh; // newest cane position, loaded when the screen opens
+  DangerZones _zones = DangerZones.none;
 
   String _mode = 'google'; // 'google' | 'drawn'
   String _tapTarget = 'start'; // google mode: 'start' | 'end' | 'via'
@@ -79,6 +82,19 @@ class _RouteEditorScreenState extends State<RouteEditorScreen> {
     super.initState();
     _center = GeoPoint(widget.lat ?? 14.1153, widget.lng ?? 122.9566);
     if (_isEdit) _loadExisting();
+    _service.fetchDangerZones(widget.deviceId).then((z) {
+      if (mounted) setState(() => _zones = z);
+    }).catchError((_) {});
+    // The position passed in is only a snapshot from an earlier screen:
+    // ask for the newest one so the map opens where the cane is now.
+    _service.fetchDeviceLocation(widget.deviceId).then((p) {
+      if (p == null || !mounted) return;
+      _fresh = p;
+      _center = p;
+      if (_map != null && !_isEdit && _start == null && _taps.isEmpty) {
+        _map!.animateCamera(CameraUpdate.newLatLngZoom(_ll(p), 16));
+      }
+    }).catchError((_) {});
   }
 
   // ---------------------------------------------------------------------
@@ -174,6 +190,14 @@ class _RouteEditorScreenState extends State<RouteEditorScreen> {
 
   void _onMapTap(LatLng latLng) {
     final p = _gp(latLng);
+    if (_zones.contains(p)) {
+      showRouteAlert(context, 'Danger zone', RouteService.dangerPinMessage);
+      return;
+    }
+    if (_mode == 'drawn' && _taps.isNotEmpty && _zones.pathHits([_taps.last, p])) {
+      showRouteAlert(context, 'Danger zone', RouteService.dangerRouteMessage);
+      return;
+    }
     setState(() {
       _hasChanges = true;
       if (_mode == 'drawn') {
@@ -211,6 +235,10 @@ class _RouteEditorScreenState extends State<RouteEditorScreen> {
       bias: _start ?? _center,
     );
     if (res == null || !mounted) return;
+    if (_zones.contains(res.point)) {
+      await showRouteAlert(context, 'Danger zone', RouteService.dangerPinMessage);
+      return;
+    }
     setState(() {
       _hasChanges = true;
       if (which == 'start') {
@@ -249,7 +277,8 @@ class _RouteEditorScreenState extends State<RouteEditorScreen> {
     } on RouteException catch (ex) {
       if (!mounted) return;
       setState(() => _planning = false);
-      await showRouteAlert(context, 'No route', ex.message);
+      await showRouteAlert(
+          context, ex.code == 'danger_zone' ? 'Danger zone' : 'No route', ex.message);
     }
   }
 
@@ -590,8 +619,24 @@ class _RouteEditorScreenState extends State<RouteEditorScreen> {
           children: [
             GoogleMap(
               initialCameraPosition: CameraPosition(target: _ll(_center), zoom: 16),
-              onMapCreated: (c) => _map = c,
+              onMapCreated: (c) {
+                _map = c;
+                final f = _fresh;
+                if (f != null && !_isEdit && _start == null && _taps.isEmpty) {
+                  c.moveCamera(CameraUpdate.newLatLngZoom(_ll(f), 16));
+                }
+              },
               onTap: _onMapTap,
+              polygons: {
+                for (var i = 0; i < _zones.polygons.length; i++)
+                  Polygon(
+                    polygonId: PolygonId('danger-$i'),
+                    points: [for (final g in _zones.polygons[i]) _ll(g)],
+                    fillColor: AppColors.alert.withOpacity(0.25),
+                    strokeColor: AppColors.alert,
+                    strokeWidth: 2,
+                  ),
+              },
               markers: _markers(),
               polylines: _polylines(),
               myLocationButtonEnabled: false,

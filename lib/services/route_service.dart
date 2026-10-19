@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/geo_point.dart';
 import '../models/route_model.dart';
+import 'danger_zones.dart';
 
 /// Anything that goes wrong in the routes feature, with a message that is
 /// safe to show to the person. [code] is a short machine-readable reason
@@ -28,6 +29,60 @@ class RouteService {
   static final RouteService instance = RouteService._();
 
   SupabaseClient get _client => Supabase.instance.client;
+
+  // ---------------------------------------------------------------------
+  // Danger zones (from the geofence editor) and the cane's last position
+  // ---------------------------------------------------------------------
+
+  static const String dangerPinMessage =
+      'That spot is inside a danger zone (the red area). Choose a place outside it.';
+  static const String dangerRouteMessage =
+      'This route goes through a danger zone (the red area), so it cannot be used.';
+
+  /// The red zones of a cane. Empty when none are drawn.
+  Future<DangerZones> fetchDangerZones(String deviceId) async {
+    try {
+      final row = await _client
+          .from('devices')
+          .select('geofence_polygon')
+          .eq('id', deviceId)
+          .maybeSingle();
+      return DangerZones.fromJson(row?['geofence_polygon']);
+    } on PostgrestException catch (e) {
+      throw RouteException(e.code ?? 'db', _dbMessage(e));
+    }
+  }
+
+  /// The newest position the cane reported; null if it never reported one.
+  Future<GeoPoint?> fetchDeviceLocation(String deviceId) async {
+    try {
+      final row = await _client
+          .from('devices')
+          .select('latitude, longitude')
+          .eq('id', deviceId)
+          .maybeSingle();
+      final lat = row?['latitude'], lng = row?['longitude'];
+      if (lat is num && lng is num && !(lat == 0 && lng == 0)) {
+        return GeoPoint(lat.toDouble(), lng.toDouble());
+      }
+      return null;
+    } on PostgrestException {
+      return null;
+    }
+  }
+
+  /// Throws 'danger_zone' when a point or the line touches a danger zone.
+  void _assertSafe(DangerZones zones, List<GeoPoint> points, List<GeoPoint> path) {
+    if (zones.isEmpty) return;
+    for (final p in points) {
+      if (zones.contains(p)) {
+        throw const RouteException('danger_zone', dangerPinMessage);
+      }
+    }
+    if (zones.pathHits(path)) {
+      throw const RouteException('danger_zone', dangerRouteMessage);
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Routes
@@ -116,6 +171,8 @@ class RouteService {
     required int durationS,
     required String source,
   }) async {
+    // A route may not start, end, pass through or run through a danger zone.
+    _assertSafe(await fetchDangerZones(deviceId), [start, end, ...waypoints], path);
     try {
       final res = await _client.rpc('save_route', params: {
         'p_device_id': deviceId,
@@ -148,6 +205,7 @@ class RouteService {
     required GeoPoint destination,
     String destinationLabel = '',
   }) async {
+    _assertSafe(await fetchDangerZones(deviceId), [destination], const []);
     try {
       final res = await _client.rpc('save_destination_route', params: {
         'p_device_id': deviceId,
@@ -419,6 +477,12 @@ class RouteService {
     List<GeoPoint> via = const [],
     bool alternatives = false,
   }) async {
+    // Danger zones: never plan to or through one. Checked before Google is
+    // asked so no quota is spent on a route that cannot be used.
+    final zones = await fetchDangerZones(deviceId);
+    if (zones.contains(destination) || via.any(zones.contains)) {
+      throw const RouteException('danger_zone', dangerPinMessage);
+    }
     final data = await _invoke({
       'action': 'route',
       'device_id': deviceId,
@@ -435,7 +499,17 @@ class RouteService {
       throw const RouteException(
           'no_route', 'Google found no walking route to that place from here.');
     }
-    return routes;
+    // Keep only the routes that stay out of the danger zones. A zone the
+    // person is already standing in is ignored so they can still walk out.
+    final safe = zones.isEmpty
+        ? routes
+        : routes.where((r) => !zones.pathHits(r.path, origin: origin)).toList();
+    if (safe.isEmpty) {
+      throw const RouteException(
+          'danger_zone',
+          'Every walking route there passes through a danger zone (the red area), so none was planned.');
+    }
+    return safe;
   }
 
   Future<Map<String, dynamic>> _invoke(Map<String, dynamic> body) async {

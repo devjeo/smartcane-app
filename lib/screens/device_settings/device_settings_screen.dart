@@ -41,6 +41,10 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
   bool _isSolo = false;
   String _caneUserName = '';
   bool _roleBusy = false;
+  // False until the first fetchCaneUser() answers, so the summary card shows
+  // "Checking..." instead of a wrong "None" / "Guardian" for a moment.
+  bool _roleLoaded = false;
+  bool _roleFailed = false;
 
   final _dbService = SupabaseService.instance;
 
@@ -106,15 +110,22 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
   Future<void> _loadCaneUser() async {
     try {
       final row = await _dbService.fetchCaneUser(widget.id);
-      if (!mounted || row == null) return;
+      if (!mounted) return;
+      if (row == null) {
+        setState(() => _roleFailed = true);
+        return;
+      }
       final profile = row['cane_user'] as Map?;
       final name = (profile?['full_name'] as String?)?.trim() ?? '';
       setState(() {
         _hasUser = row['user_id'] != null;
         _isSolo = row['user_id'] != null && row['user_id'] == row['guardian_id'];
         _caneUserName = name.isNotEmpty ? name : 'Cane user';
+        _roleLoaded = true;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) setState(() => _roleFailed = true);
+    }
   }
 
   String _errText(Object e) {
@@ -236,6 +247,34 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
                     children: [
+                      const _SectionTitle('Cane Status'),
+                      _SectionCard(children: [
+                        _InfoRow(
+                          icon: Icons.person_outline,
+                          label: 'Linked user',
+                          value: _roleFailed
+                              ? 'Unavailable'
+                              : !_roleLoaded
+                              ? 'Checking...'
+                              : (!_hasUser ? 'None' : (_isSolo ? 'You (solo)' : _caneUserName)),
+                        ),
+                        const _RowDivider(),
+                        _InfoRow(
+                          icon: Icons.shield_outlined,
+                          label: 'Mode',
+                          value: _roleFailed
+                              ? 'Unavailable'
+                              : (!_roleLoaded ? 'Checking...' : (_isSolo ? 'Solo' : 'Guardian')),
+                          description: (!_roleLoaded || _roleFailed)
+                              ? null
+                              : (_isSolo
+                                  ? 'You are both guardian and cane user. SOS calls go to your emergency contacts.'
+                                  : (_hasUser
+                                      ? 'A guardian watches this cane and the linked user carries it.'
+                                      : 'No one carries this cane yet, so SOS cannot start a call. Guardians still get a push.')),
+                        ),
+                      ]),
+
                       const _SectionTitle('Hardware Modules'),
                       _SectionCard(children: [
                         _SettingRow(icon: Icons.lightbulb_outline, label: 'Light Mode', description: 'On = better for dark places, Off = saves battery in well-lit areas', value: _lightMode, onChanged: _handleLightModeChange),
@@ -541,6 +580,57 @@ class _RowDivider extends StatelessWidget {
         padding: EdgeInsets.only(left: 65),
         child: Divider(height: 1, color: _Colors.border),
       );
+}
+
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final String? description;
+
+  const _InfoRow({required this.icon, required this.label, required this.value, this.description});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 15),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            margin: const EdgeInsets.only(right: 15),
+            decoration: BoxDecoration(color: const Color(0xFFF1F5F9), borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, size: 20, color: _Colors.textSub),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _Colors.textMain)),
+                    Flexible(
+                      child: Text(value,
+                          textAlign: TextAlign.end,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _Colors.primary)),
+                    ),
+                  ],
+                ),
+                if (description != null) ...[
+                  const SizedBox(height: 2),
+                  Text(description!, style: const TextStyle(fontSize: 12, color: _Colors.textSub, height: 1.4)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _SettingRow extends StatelessWidget {
