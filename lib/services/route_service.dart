@@ -357,6 +357,27 @@ class RouteService {
     }
   }
 
+  /// The walk in progress on each of [deviceIds], in ONE query (device id ->
+  /// session). Used by Home so it does not query per cane every 10 s.
+  Future<Map<String, RouteSession>> fetchActiveSessions(List<String> deviceIds) async {
+    if (deviceIds.isEmpty) return {};
+    try {
+      final rows = await _client
+          .from('route_sessions')
+          .select()
+          .inFilter('device_id', deviceIds)
+          .eq('status', 'active');
+      final out = <String, RouteSession>{};
+      for (final r in List<Map<String, dynamic>>.from(rows as List)) {
+        final s = RouteSession.fromRow(r);
+        out[s.deviceId] = s;
+      }
+      return out;
+    } on PostgrestException catch (e) {
+      throw RouteException(e.code ?? 'db', _dbMessage(e));
+    }
+  }
+
   /// One walk by id (active or finished); null if it does not exist.
   Future<RouteSession?> fetchSession(String sessionId) async {
     try {

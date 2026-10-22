@@ -2,13 +2,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:ionicons_plus/ionicons_plus.dart';
 import '../../models/device_model.dart';
+import '../../models/route_model.dart';
 import '../../services/supabase_service.dart';
+import '../../services/route_service.dart';
 import '../../services/pending_device_store.dart';
 import '../../services/main_tab_controller.dart';
+import '../../services/log_read_store.dart';
 import '../../theme/app_colors.dart';
+import 'home_urgency.dart';
 import 'widgets/device_card.dart';
 import 'widgets/pending_device_card.dart';
-import '../../services/background_location_service.dart';
 
 /// Lets DashboardScreen know when it's become the visible route again (e.g.
 /// coming back from Add Device) so it can rescan for newly-registered
@@ -26,34 +29,23 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen>
-    with SingleTickerProviderStateMixin, RouteAware {
+    with RouteAware {
   List<DeviceModel> _devices = [];
   List<PendingDevice> _pendingDevices = [];
   Map<String, DateTime> _phonePings = {};
   static const _pingStale = Duration(minutes: 2);
-  bool _refreshing = false;
-  bool _showLoadingBanner = true;
-
-  late final AnimationController _spinController;
-  Timer? _bannerTimer;
+  Set<String> _sosIds = {};
+  Map<String, int> _unread = {};   // unread logs per device (alert badge)
+  Map<String, RouteSession> _walks = {};
   Timer? _statusTimer;
 
   @override
   void initState() {
     super.initState();
 
-    // Equivalent of the Animated.loop spin value in index.tsx
-    _spinController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 1),
-    )..repeat();
-
-    // Equivalent of the 3-second setTimeout that hides the loading banner
-    _bannerTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _showLoadingBanner = false);
-    });
-
     _fetchDevices();
+    // Logs got read on the Logs tab -> recount right away.
+    LogReadStore.changed.addListener(_refreshStatus);
     _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _refreshStatus());
 
     // Background tracking is started by MainTabScreen, and only for accounts
@@ -72,8 +64,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   void dispose() {
     dashboardRouteObserver.unsubscribe(this);
-    _spinController.dispose();
-    _bannerTimer?.cancel();
+    LogReadStore.changed.removeListener(_refreshStatus);
     _statusTimer?.cancel();
     super.dispose();
   }
@@ -94,8 +85,11 @@ class _DashboardScreenState extends State<DashboardScreen>
   // Add Device or any other pushed route pops).
   Future<void> _fetchDevices() async {
     try {
-      final devices = await SupabaseService.instance.fetchDevices();
-      final remoteIds = devices.map((d) => d.id).toSet();
+      final allDevices = await SupabaseService.instance.fetchDevices();
+      final remoteIds = allDevices.map((d) => d.id).toSet();
+      // Home only lists canes this account guards or watches; a cane the
+      // account merely CARRIES lives on the My Cane tab.
+      final devices = allDevices.where((d) => d.showsOnHome).toList();
 
       // Any locally-tracked "pending" device that now has a real row
       // stops being tracked locally — the real card takes over from here.
@@ -130,8 +124,9 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (claimedAny) {
         // Re-fetch so the newly-claimed device(s) render as real cards
         // instead of pending ones on this same pass.
-        final refreshed = await SupabaseService.instance.fetchDevices();
-        final refreshedIds = refreshed.map((d) => d.id).toSet();
+        final refreshedAll = await SupabaseService.instance.fetchDevices();
+        final refreshedIds = refreshedAll.map((d) => d.id).toSet();
+        final refreshed = refreshedAll.where((d) => d.showsOnHome).toList();
         stillPending = (await pendingStore.getAll())
             .where((p) => !refreshedIds.contains(p.id))
             .toList();
@@ -140,6 +135,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             _devices = refreshed;
             _pendingDevices = stillPending;
           });
+          unawaited(_refreshStatus());
         }
         return;
       }
@@ -149,6 +145,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           _devices = devices;
           _pendingDevices = stillPending;
         });
+        unawaited(_refreshStatus());
       }
     } catch (e) {
       if (SupabaseService.instance.currentUser == null && mounted) {
@@ -158,20 +155,38 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   /// Every 10 s: re-read each cane's last heartbeat so Online/Offline stays
-  /// correct without a manual refresh (and rebuilds even if the read fails).
+  /// correct without a manual refresh, plus active SOS and walks (one query
+  /// each for all canes). Rebuilds even if a read fails.
   Future<void> _refreshStatus() async {
     if (!mounted || _devices.isEmpty) return;
+    final ids = _devices.map((d) => d.id).toList();
     try {
-      final seen = await SupabaseService.instance
-          .fetchLastSeen(_devices.map((d) => d.id).toList());
+      final seen = await SupabaseService.instance.fetchLastSeen(ids);
       // Guardian only: is the cane user's phone still pinging?
       final watch = _devices.where((d) => d.isGuardian && d.hasUser).map((d) => d.id).toList();
       final pings = watch.isEmpty
           ? <String, DateTime>{}
           : await SupabaseService.instance.fetchLastPhonePings(watch);
+      // SOS and walks are optional extras: if one fails the rest still shows.
+      Set<String> sos = _sosIds;
+      Map<String, int> unread = _unread;
+      Map<String, RouteSession> walks = _walks;
+      try {
+        final readIds = await LogReadStore.instance.readIds();
+        final summary =
+            await SupabaseService.instance.fetchUnreadSummary(ids, readIds);
+        sos = summary.sosIds;
+        unread = summary.counts;
+      } catch (_) {}
+      try {
+        walks = await RouteService.instance.fetchActiveSessions(ids);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _phonePings = pings;
+        _sosIds = sos;
+        _unread = unread;
+        _walks = walks;
         _devices = _devices
             .map((d) => seen.containsKey(d.id) ? d.withLastSeen(seen[d.id]) : d)
             .toList();
@@ -193,316 +208,235 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _onRefresh() async {
-    setState(() => _refreshing = true);
     await _fetchDevices();
-    if (mounted) setState(() => _refreshing = false);
+  }
+
+  // ---------- navigation helpers ----------
+
+  Map<String, dynamic> _args(DeviceModel d) => {
+        'id': d.id,
+        'name': d.name,
+        'userRole': d.userRole,
+        'lat': d.lat,
+        'lng': d.lng,
+      };
+
+  void _openTracker(DeviceModel d) =>
+      Navigator.of(context).pushNamed('/tracker', arguments: _args(d));
+
+  void _openRoutes(DeviceModel d) =>
+      Navigator.of(context).pushNamed('/routes', arguments: _args(d));
+
+  void _openSettings(DeviceModel d) =>
+      Navigator.of(context).pushNamed('/device-settings', arguments: _args(d));
+
+  void _openLogs(DeviceModel d) => MainTabController.instance
+      .showLogsFiltered(device: d.id, category: 'All Types');
+
+  void _addCane() => Navigator.of(context).pushNamed('/add-device');
+
+  Widget _card(DeviceModel d, {bool hero = false}) => DeviceCard(
+        key: ValueKey(d.id),
+        device: d.withAlerts(_unread[d.id] ?? 0),
+        hero: hero,
+        sosActive: _sosIds.contains(d.id),
+        walk: _walks[d.id],
+        callWarning: _callWarning(d),
+        onTrack: () => _openTracker(d),
+        onLogs: () => _openLogs(d),
+        onAlertsTap: () => _openLogs(d),
+        onRoutes: d.isGuardian ? () => _openRoutes(d) : null,
+        onSettings: d.isGuardian ? () => _openSettings(d) : null,
+      );
+
+  Widget _alertStrip(int totalAlerts, List<DeviceModel> sosDevices) {
+    final sos = sosDevices.isNotEmpty;
+    final text = sos
+        ? (sosDevices.length == 1
+            ? 'SOS from ${sosDevices.first.userName}'
+            : 'SOS from ${sosDevices.length} canes')
+        : '$totalAlerts new ${totalAlerts == 1 ? 'alert' : 'alerts'}';
+    return GestureDetector(
+      onTap: () => MainTabController.instance.showLogsFiltered(),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: sos ? AppColors.alert : const Color(0xFFFEF2F2),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.alert),
+        ),
+        child: Row(
+          children: [
+            Icon(sos ? Ionicons.warning : Ionicons.notifications,
+                size: 18, color: sos ? Colors.white : AppColors.alert),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(text,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: sos ? Colors.white : AppColors.alert)),
+            ),
+            Icon(Ionicons.chevron_forward,
+                size: 18, color: sos ? Colors.white : AppColors.alert),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 60),
+      child: Column(
+        children: [
+          Container(
+            width: 84,
+            height: 84,
+            decoration: const BoxDecoration(
+                color: Color(0xFFE0F2FE), shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: const Icon(Ionicons.add, size: 40, color: AppColors.primary),
+          ),
+          const SizedBox(height: 20),
+          const Text('No canes yet',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textMain)),
+          const SizedBox(height: 6),
+          const Text('Pair your cane, or join one with a share code.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, color: AppColors.textSub)),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            height: 54,
+            child: ElevatedButton.icon(
+              onPressed: _addCane,
+              icon: const Icon(Ionicons.add, color: Colors.white),
+              label: const Text('Pair your first cane',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final onlineCount = _devices.where((d) => d.isOnline).length;
-    final offlineCount = _devices.length - onlineCount;
-    // Sum of each device's alert count, so this matches the number shown
-    // in the "X alerts" badge on each device card (not just how many
-    // devices happen to have at least one alert).
-    final alertCount = _devices.fold<int>(0, (sum, d) => sum + d.alerts);
+    final silentIds = {
+      for (final d in _devices)
+        if (_callWarning(d) != null) d.id,
+    };
+    final sorted = sortByUrgency(
+      _devices,
+      sosIds: _sosIds,
+      silentIds: silentIds,
+      walkingIds: _walks.keys.toSet(),
+    );
+    final totalAlerts = _devices.fold<int>(0, (sum, d) => sum + (_unread[d.id] ?? 0));
+    final sosDevices = sorted.where((d) => _sosIds.contains(d.id)).toList();
+    final isEmpty = _devices.isEmpty && _pendingDevices.isEmpty;
+    final single = _devices.length == 1;
+
+    // A plain status line: facts only, no "needs attention" wording and no
+    // red. Alerts and SOS are shown by the strip and the cards themselves.
+    final offline = _devices.where((d) => !d.isOnline).length;
+    final lowBattery =
+        _devices.where((d) => d.battery <= kLowBatteryPercent).length;
+    final subtitle = _devices.isEmpty
+        ? 'No canes yet'
+        : [
+            '${_devices.length} ${_devices.length == 1 ? 'cane' : 'canes'}',
+            if (offline == 0 && lowBattery == 0) 'all online',
+            if (offline > 0) '$offline offline',
+            if (lowBattery > 0) '$lowBattery low battery',
+          ].join(' · ');
 
     return Scaffold(
       backgroundColor: AppColors.bg,
-      body: SafeAreaView(
-        child: Stack(
-          children: [
-            Column(
-              children: [
-                // A. Fixed top header
-                Container(
-                  padding: const EdgeInsets.fromLTRB(20, 15, 20, 20),
-                  decoration: const BoxDecoration(
-                    color: AppColors.bg,
-                    border: Border(bottom: BorderSide(color: AppColors.border)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('My Devices',
-                              style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppColors.textMain)),
-                          Text(
-                            'Monitoring ${_devices.length} registered ${_devices.length == 1 ? 'cane' : 'canes'}',
-                            style: const TextStyle(
-                                fontSize: 14, color: AppColors.textSub),
-                          ),
-                        ],
-                      ),
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: AppColors.card,
-                              borderRadius: BorderRadius.circular(15),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppColors.primary.withOpacity(0.15),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ],
-                            ),
-                            alignment: Alignment.center,
-                            child: const Icon(Ionicons.shield_checkmark,
-                                size: 24, color: AppColors.primary),
-                          ),
-                          Positioned(
-                            top: -2,
-                            right: -2,
-                            child: Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: AppColors.alert,
-                                shape: BoxShape.circle,
-                                border:
-                                    Border.all(color: Colors.white, width: 1),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-
-                // B. Scrollable content
-                Expanded(
-                  child: RefreshIndicator(
-                    onRefresh: _onRefresh,
-                    color: AppColors.primary,
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(20, 15, 20, 60),
-                      children: [
-                        // Summary bar
-                        Container(
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          margin: const EdgeInsets.only(bottom: 20),
-                          decoration: BoxDecoration(
-                            color: AppColors.card,
-                            borderRadius: BorderRadius.circular(15),
-                            boxShadow: const [
-                              BoxShadow(
-                                  color: Color(0x0D000000),
-                                  blurRadius: 10,
-                                  offset: Offset(0, 4)),
-                            ],
-                          ),
-                          child: Row(
-                            children: [
-                              _SummaryStat(
-                                  value: onlineCount,
-                                  label: 'Online',
-                                  color: AppColors.online,
-                                  showBorder: true),
-                              _SummaryStat(
-                                  value: offlineCount,
-                                  label: 'Offline',
-                                  color: AppColors.offline,
-                                  showBorder: true),
-                              _SummaryStat(
-                                  value: alertCount,
-                                  label: 'Alerts',
-                                  color: AppColors.alert),
-                            ],
-                          ),
-                        ),
-
-                        for (final device in _devices)
-                          DeviceCard(
-                            key: ValueKey(device.id),
-                            device: device,
-                            callWarning: _callWarning(device),
-                            onTap: () => Navigator.of(context)
-                                .pushNamed('/tracker', arguments: {
-                              'id': device.id,
-                              'name': device.name,
-                              'userRole': device.userRole,
-                              'lat': device.lat,
-                              'lng': device.lng,
-                            }),
-                            onAlertsTap: () =>
-                                MainTabController.instance.showLogsFiltered(
-                              device: device.id,
-                              category: 'All Types',
-                            ),
-                          ),
-
-                        for (final pending in _pendingDevices)
-                          PendingDeviceCard(
-                              key: ValueKey(pending.id), device: pending),
-
-                        // Add device (dashed border)
-                        InkWell(
-                          borderRadius: BorderRadius.circular(15),
-                          onTap: () =>
-                              Navigator.of(context).pushNamed('/add-device'),
-                          child: Container(
-                            margin: const EdgeInsets.only(top: 10, bottom: 20),
-                            padding: const EdgeInsets.all(25),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(
-                                  color: AppColors.primary, width: 1.5),
-                            ),
-                            child: CustomPaint(
-                              painter: _DashedBorderPainter(
-                                  color: AppColors.primary),
-                              child: Column(
-                                children: [
-                                  Container(
-                                    width: 50,
-                                    height: 50,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF0F8FF),
-                                      shape: BoxShape.circle,
-                                      border:
-                                          Border.all(color: AppColors.border),
-                                    ),
-                                    alignment: Alignment.center,
-                                    child: const Icon(Ionicons.add,
-                                        size: 28, color: AppColors.primary),
-                                  ),
-                                  const SizedBox(height: 15),
-                                  const Text('Add New Device',
-                                      style: TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.bold,
-                                          color: AppColors.primary)),
-                                  const SizedBox(height: 5),
-                                  const Text('Tap to pair a new Smart Cane',
-                                      style: TextStyle(
-                                          fontSize: 14,
-                                          color: AppColors.textSub)),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            // Loading banner overlay
-            if (_showLoadingBanner)
-              Positioned(
-                bottom: 80,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    width: MediaQuery.of(context).size.width * 0.9,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 15, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xCC1E293B),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Row(
-                      children: [
-                        RotationTransition(
-                          turns: _spinController,
-                          child: const Icon(Ionicons.reload,
-                              size: 20, color: Colors.white),
-                        ),
-                        const SizedBox(width: 10),
-                        const Expanded(
-                          child: Text(
-                            'Live preview loading, interactions may not be saved',
-                            style: TextStyle(color: Colors.white, fontSize: 12),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SummaryStat extends StatelessWidget {
-  final int value;
-  final String label;
-  final Color color;
-  final bool showBorder;
-
-  const _SummaryStat({
-    required this.value,
-    required this.label,
-    required this.color,
-    this.showBorder = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        decoration: showBorder
-            ? const BoxDecoration(
-                border: Border(right: BorderSide(color: AppColors.border)),
-              )
-            : null,
+      body: SafeArea(
+        bottom: false,
         child: Column(
           children: [
-            Text('$value',
-                style: TextStyle(
-                    fontSize: 28, fontWeight: FontWeight.bold, color: color)),
-            const SizedBox(height: 3),
-            Text(label,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSub)),
+            // Header: title + subtitle + "+"
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 15, 20, 16),
+              decoration: const BoxDecoration(
+                color: AppColors.bg,
+                border: Border(bottom: BorderSide(color: AppColors.border)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Home',
+                            style: TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.textMain)),
+                        Text(subtitle,
+                            style: const TextStyle(
+                                fontSize: 14, color: AppColors.textSub)),
+                      ],
+                    ),
+                  ),
+                  Material(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(14),
+                    child: InkWell(
+                      onTap: _addCane,
+                      borderRadius: BorderRadius.circular(14),
+                      child: const SizedBox(
+                        width: 46,
+                        height: 46,
+                        child: Icon(Ionicons.add, size: 26, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: _onRefresh,
+                color: AppColors.primary,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(20, 15, 20, 60),
+                  children: [
+                    if (totalAlerts > 0 || sosDevices.isNotEmpty)
+                      _alertStrip(totalAlerts, sosDevices),
+
+                    if (isEmpty)
+                      _emptyState()
+                    else ...[
+                      for (final d in sorted) _card(d, hero: single),
+                      for (final pending in _pendingDevices)
+                        PendingDeviceCard(key: ValueKey(pending.id), device: pending),
+                    ],
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
-  }
-}
-
-/// Draws a dashed rounded-rect border, since Flutter has no CSS
-/// `borderStyle: 'dashed'` equivalent out of the box.
-class _DashedBorderPainter extends CustomPainter {
-  final Color color;
-  const _DashedBorderPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Intentionally left transparent — the solid border above already
-    // approximates the RN dashed container. Swap in a dash_painter package
-    // if you want a pixel-perfect dashed line.
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-/// Thin SafeArea wrapper so this file reads closely to the RN
-/// `<SafeAreaView edges={['top']}>` usage.
-class SafeAreaView extends StatelessWidget {
-  final Widget child;
-  const SafeAreaView({super.key, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(bottom: false, child: child);
   }
 }

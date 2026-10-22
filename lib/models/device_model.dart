@@ -21,6 +21,7 @@ class DeviceModel {
   final String? guardianId;
   final String? caneUserId;
   final String guardianName;
+  final String? activityStatus; // devices.activity_status as the cane reports it
 
   const DeviceModel({
     required this.id,
@@ -41,9 +42,14 @@ class DeviceModel {
     this.guardianId,
     this.caneUserId,
     this.guardianName = '',
+    this.activityStatus,
   });
 
   bool get isViewer => userRole == 'viewer';
+  /// Phase 2: the cane user never gets alerts about their own cane.
+  /// admin, viewer and owner (solo) do.
+  bool get receivesAlerts => userRole != 'user';
+  bool get showsOnHome => userRole != 'user';
   bool get isGuardian => userRole == 'admin' || userRole == 'owner';
   bool get isCaneUser => userRole == 'user' || userRole == 'owner';
   bool get isSolo => userRole == 'owner';
@@ -62,6 +68,29 @@ class DeviceModel {
       lastSeenAt != null && DateTime.now().difference(lastSeenAt!) < onlineWindow;
   bool get isConnected => isOnline;
   String get statusText => isOnline ? 'Online' : 'Offline';
+
+  /// Same cane with a different alert count (Home shows UNREAD ones only).
+  DeviceModel withAlerts(int n) => DeviceModel(
+        id: id,
+        name: name,
+        serial: serial,
+        alerts: n,
+        userRole: userRole,
+        lastSeenAt: lastSeenAt,
+        battery: battery,
+        location: location,
+        lat: lat,
+        lng: lng,
+        userBgBase: userBgBase,
+        userColorBase: userColorBase,
+        userInitials: userInitials,
+        userName: userName,
+        version: version,
+        guardianId: guardianId,
+        caneUserId: caneUserId,
+        guardianName: guardianName,
+        activityStatus: activityStatus,
+      );
 
   DeviceModel withLastSeen(DateTime? t) => DeviceModel(
         id: id,
@@ -82,6 +111,7 @@ class DeviceModel {
         guardianId: guardianId,
         caneUserId: caneUserId,
         guardianName: guardianName,
+        activityStatus: activityStatus,
       );
 
   /// Builds a DeviceModel from a `device_shares` row joined with `devices`
@@ -112,9 +142,13 @@ class DeviceModel {
         : (nameOf(caneUser).isNotEmpty ? nameOf(caneUser) : 'Cane user');
     final initials = !hasUser ? '?' : _initialsOf(userName);
 
-    final logsCount = (d['logs'] as List?)?.isNotEmpty == true
-        ? (d['logs'][0]['count'] as int? ?? 0)
-        : 0;
+    final role = shareRow['role'] as String? ?? 'owner';
+    // Defensive: a cane user's own cane never shows an alert count.
+    final logsCount = role == 'user'
+        ? 0
+        : ((d['logs'] as List?)?.isNotEmpty == true
+            ? (d['logs'][0]['count'] as int? ?? 0)
+            : 0);
 
     return DeviceModel(
       id: d['id']?.toString() ?? '',
@@ -135,6 +169,7 @@ class DeviceModel {
       guardianId: d['guardian_id']?.toString(),
       caneUserId: d['user_id']?.toString(),
       guardianName: guardianName,
+      activityStatus: (d['activity_status'] as String?)?.trim(),
     );
   }
 

@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'call_audio.dart';
 import 'call_log.dart';
 
 enum PeerState { starting, waiting, connecting, connected, failed, closed }
@@ -163,6 +164,15 @@ class CallPeer {
   bool _offering = false; // an offer is being created right now
   bool _closed = false;
 
+  // ---- loudspeaker + volume ----
+  // The cane user's phone is always on the loudspeaker. The guardian's phone
+  // follows the on-screen button. The choice is re-applied every few seconds
+  // because Android can quietly move the sound back (audio focus change after
+  // a spoken message, a headset plugged in, the screen turning on).
+  bool _speakerOn = true;
+  bool _volumeRaised = false;
+  Timer? _speakerTimer;
+
   Future<void> start() async {
     onState(PeerState.starting);
 
@@ -218,7 +228,10 @@ class CallPeer {
       });
     };
     pc.onTrack = (e) async {
-      if (e.track.kind == 'audio') e.track.enabled = true;
+      if (e.track.kind == 'audio') {
+        e.track.enabled = true;
+        _onAudioReady();
+      }
       if (e.track.kind == 'video' && !isCaller) {
         callLog('$_who got remote video track (streams=${e.streams.length})');
         MediaStream? st = e.streams.isNotEmpty ? e.streams.first : null;
@@ -242,6 +255,7 @@ class CallPeer {
       switch (s) {
         case RTCIceConnectionState.RTCIceConnectionStateConnected:
         case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+          _onAudioReady();
           onState(PeerState.connected);
           break;
         case RTCIceConnectionState.RTCIceConnectionStateFailed:
@@ -662,10 +676,33 @@ class CallPeer {
     }
   }
 
-  Future<void> setSpeaker(bool on) async {
-    try {
-      await Helper.setSpeakerphoneOn(on);
-    } catch (_) {}
+  /// Chooses the loudspeaker (true) or the ear speaker (false). The cane
+  /// user's phone ignores `false`: it stays on the loudspeaker. Returns false
+  /// when the phone could not switch (see the call log for the reason).
+  Future<bool> setSpeaker(bool on) async {
+    _speakerOn = isCaller ? true : on;
+    _startSpeakerKeeper();
+    return CallAudio.route(speaker: _speakerOn, who: _who);
+  }
+
+  void _startSpeakerKeeper() {
+    _speakerTimer ??= Timer.periodic(const Duration(seconds: 4), (_) {
+      if (_closed) return;
+      unawaited(CallAudio.route(speaker: _speakerOn, who: _who, quiet: true));
+    });
+  }
+
+  /// The connection is up / the other phone's sound has arrived: apply the
+  /// speaker choice again and make sure the call volume is not left low.
+  void _onAudioReady() {
+    if (_closed) return;
+    _startSpeakerKeeper();
+    unawaited(CallAudio.route(speaker: _speakerOn, who: _who));
+    if (!_volumeRaised) {
+      _volumeRaised = true;
+      // User phone: full volume. Guardian: at least 80 % (volume keys still work).
+      unawaited(CallAudio.raiseVolume(atLeast: isCaller ? 1.0 : 0.8, who: _who));
+    }
   }
 
   Future<void> close({bool sendBye = true}) async {
@@ -676,6 +713,8 @@ class CallPeer {
     _readyTimer?.cancel();
     _diagTimer?.cancel();
     _statsTimer?.cancel();
+    _speakerTimer?.cancel();
+    _speakerTimer = null;
     await stopCamera();
     try {
       for (final t in _local?.getTracks() ?? <MediaStreamTrack>[]) {

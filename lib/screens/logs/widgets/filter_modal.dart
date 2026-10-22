@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../../../theme/app_colors.dart';
+
+/// Date options in the filter. 'Custom range' opens a date range picker.
+const kDateAny = 'Any time';
+const kDateCustom = 'Custom range';
+const kDateOptions = [kDateAny, 'Today', 'Last 7 days', 'Last 30 days', kDateCustom];
 
 /// Equivalent of the `<Modal visible={isModalVisible} ...>` block in logs.tsx.
 /// Call via `showModalBottomSheet` from LogsScreen instead of RN's
@@ -9,6 +15,8 @@ class FilterModalSheet extends StatefulWidget {
   final List<String> categories;
   final String activeDevice;
   final String activeCategory;
+  final String activeDate;          // one of kDateOptions
+  final DateTimeRange? customRange; // used when activeDate == kDateCustom
 
   const FilterModalSheet({
     super.key,
@@ -16,6 +24,8 @@ class FilterModalSheet extends StatefulWidget {
     required this.categories,
     required this.activeDevice,
     required this.activeCategory,
+    this.activeDate = kDateAny,
+    this.customRange,
   });
 
   @override
@@ -25,18 +35,50 @@ class FilterModalSheet extends StatefulWidget {
 class _FilterModalSheetState extends State<FilterModalSheet> {
   late String _activeDevice;
   late String _activeCategory;
+  late String _activeDate;
+  DateTimeRange? _customRange;
 
   @override
   void initState() {
     super.initState();
     _activeDevice = widget.activeDevice;
     _activeCategory = widget.activeCategory;
+    _activeDate = widget.activeDate;
+    _customRange = widget.customRange;
   }
 
   void _clearFilters() {
     setState(() {
       _activeDevice = 'All Devices';
       _activeCategory = 'All Types';
+      _activeDate = kDateAny;
+      _customRange = null;
+    });
+  }
+
+  String get _customLabel {
+    final r = _customRange;
+    if (r == null) return kDateCustom;
+    final f = DateFormat('MMM d, y');
+    return r.start == r.end ? f.format(r.start) : '${f.format(r.start)} – ${f.format(r.end)}';
+  }
+
+  Future<void> _pickDate(String option) async {
+    if (option != kDateCustom) {
+      setState(() => _activeDate = option);
+      return;
+    }
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(now.year, now.month, now.day),
+      initialDateRange: _customRange,
+    );
+    if (picked == null) return;
+    setState(() {
+      _customRange = picked;
+      _activeDate = kDateCustom;
     });
   }
 
@@ -86,6 +128,17 @@ class _FilterModalSheetState extends State<FilterModalSheet> {
                     active: _activeCategory,
                     onSelected: (v) => setState(() => _activeCategory = v),
                   ),
+                  const SizedBox(height: 25),
+                  const Text('Date',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+                  const SizedBox(height: 15),
+                  _ChipWrap(
+                    options: kDateOptions,
+                    active: _activeDate,
+                    labelFor: (o) => o == kDateCustom ? _customLabel : o,
+                    onSelected: _pickDate,
+                  ),
+                  const SizedBox(height: 10),
                 ],
               ),
             ),
@@ -117,6 +170,9 @@ class _FilterModalSheetState extends State<FilterModalSheet> {
                     onPressed: () => Navigator.of(context).pop({
                       'activeDevice': _activeDevice,
                       'activeCategory': _activeCategory,
+                      'activeDate': _activeDate,
+                      'rangeFrom': _customRange?.start.toIso8601String() ?? '',
+                      'rangeTo': _customRange?.end.toIso8601String() ?? '',
                     }),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
@@ -140,8 +196,14 @@ class _ChipWrap extends StatelessWidget {
   final List<String> options;
   final String active;
   final ValueChanged<String> onSelected;
+  final String Function(String option)? labelFor;
 
-  const _ChipWrap({required this.options, required this.active, required this.onSelected});
+  const _ChipWrap({
+    required this.options,
+    required this.active,
+    required this.onSelected,
+    this.labelFor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -160,7 +222,7 @@ class _ChipWrap extends StatelessWidget {
               border: Border.all(color: isActive ? AppColors.primary : AppColors.border),
             ),
             child: Text(
-              option,
+              labelFor?.call(option) ?? option,
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,

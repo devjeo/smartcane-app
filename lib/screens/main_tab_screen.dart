@@ -22,29 +22,31 @@ class MainTabScreen extends StatefulWidget {
   State<MainTabScreen> createState() => _MainTabScreenState();
 }
 
-class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProviderStateMixin {
-  int _index = 0;
-  bool _hasUserRole = false; // account carries at least one cane -> show "My Cane" tab
+class _MainTabScreenState extends State<MainTabScreen> {
+  // Default until the roles load: the guardian layout (the app's old
+  // behavior). A cane-user-only account is switched to My Cane as soon as
+  // the roles arrive.
+  List<AppTab> _tabs = const [AppTab.home, AppTab.logs, AppTab.account];
+  AppTab _current = AppTab.home;
   bool _rolesLoaded = false;
-  static const _userTabIndex = 3;
 
   // Key gives us a handle to LogsScreenState so filters can be pushed into
   // it from outside (e.g. from a device card's alert badge) without
-  // recreating the widget — IndexedStack keeps it mounted the whole time.
+  // recreating the widget; IndexedStack keeps it mounted the whole time.
   final _logsScreenKey = GlobalKey<LogsScreenState>();
 
-  late final _screens = [
-    const DashboardScreen(),
-    LogsScreen(key: _logsScreenKey),
-    const SettingsScreen(),
-  ];
-  final _userHome = const UserHomeScreen();
+  late final Map<AppTab, Widget> _screens = {
+    AppTab.home: const DashboardScreen(),
+    AppTab.logs: LogsScreen(key: _logsScreenKey),
+    AppTab.account: const SettingsScreen(),
+    AppTab.myCane: const UserHomeScreen(),
+  };
 
   @override
   void initState() {
     super.initState();
     // Equivalent of the registerForPushNotifications() useEffect in
-    // TabLayout — runs once when the tab shell mounts.
+    // TabLayout, runs once when the tab shell mounts.
     PushNotificationService.instance.registerForPushNotifications();
 
     MainTabController.rolesChanged.addListener(_loadRoles);
@@ -53,11 +55,10 @@ class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProvider
     // Wire up MainTabController so other screens can switch tabs and/or
     // set the Logs filter without using Navigator.
     MainTabController.instance.attach(
-      setTabIndex: (i) => setState(() => _index = i),
+      setTab: _selectTab,
       applyLogsFilter: ({device, category}) {
         _logsScreenKey.currentState?.applyFilter(device: device, category: category);
       },
-      clearLogsFilter: () => _logsScreenKey.currentState?.clearFilters(),
       openLog: (id) => _logsScreenKey.currentState?.openLog(id),
     );
   }
@@ -68,17 +69,37 @@ class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProvider
     super.dispose();
   }
 
+  /// Which tabs an account gets, from its raw share roles.
+  /// ('owner' is already expanded to admin + user by fetchMyShareRoles.)
+  ///   guardian side only (admin / viewer): Home, Logs, Account
+  ///   cane user only:                      My Cane, Account
+  ///   both (dual-role or solo owner):      Home, My Cane, Logs, Account
+  static List<AppTab> tabsForRoles(List<String> roles) {
+    final hasGuardianSide = roles.contains('admin') || roles.contains('viewer');
+    final hasUser = roles.contains('user');
+    if (hasGuardianSide && hasUser) {
+      return const [AppTab.home, AppTab.myCane, AppTab.logs, AppTab.account];
+    }
+    if (hasUser) return const [AppTab.myCane, AppTab.account];
+    return const [AppTab.home, AppTab.logs, AppTab.account];
+  }
+
   Future<void> _loadRoles() async {
     try {
       final roles = await SupabaseService.instance.fetchMyShareRoles();
       if (!mounted) return;
+      final tabs = tabsForRoles(roles);
       final hasUser = roles.contains('user');
-      final onlyUser = hasUser && roles.every((r) => r == 'user');
       setState(() {
-        _hasUserRole = hasUser;
-        // An account that only carries canes lands on its own screen.
-        if (!_rolesLoaded && onlyUser) _index = _userTabIndex;
-        if (!hasUser && _index == _userTabIndex) _index = 0;
+        _tabs = tabs;
+        if (!_rolesLoaded) {
+          // First load: land on the first tab of this account's layout
+          // (My Cane for a cane-user-only account).
+          _current = tabs.first;
+        } else if (!tabs.contains(_current)) {
+          // The tab we were on no longer exists: fall back to the first one.
+          _current = tabs.first;
+        }
         _rolesLoaded = true;
       });
 
@@ -92,29 +113,46 @@ class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProvider
     } catch (_) {}
   }
 
+  /// Selects a tab by name. Returns false (and does nothing) when this
+  /// account does not have that tab.
+  bool _selectTab(AppTab tab) {
+    if (!_tabs.contains(tab)) return false;
+    if (_current != tab) setState(() => _current = tab);
+    return true;
+  }
+
   void _onTabSelected(int index) {
+    final tab = _tabs[index];
     // A direct tap on the Logs tab in the bottom nav always starts
-    // unfiltered — only the alert-badge path (MainTabController
+    // unfiltered; only the alert-badge path (MainTabController
     // .showLogsFiltered) should carry a filter through.
-    if (index == 1) {
+    if (tab == AppTab.logs) {
       _logsScreenKey.currentState?.clearFilters();
     }
-    setState(() => _index = index);
+    _selectTab(tab);
   }
 
   @override
   Widget build(BuildContext context) {
+    final index = _tabs.indexOf(_current).clamp(0, _tabs.length - 1).toInt();
+    // Logs only count as "read" while their tab is actually on screen.
+    final logsVisible = _tabs[index] == AppTab.logs;
+    WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _logsScreenKey.currentState?.setTabVisible(logsVisible));
     return Scaffold(
       // IndexedStack keeps each tab's state alive when switching, matching
       // Expo Router's <Tabs> default behavior of keeping screens mounted.
+      // Each child is keyed by its tab so state survives when the list changes.
       body: IndexedStack(
-        index: _index,
-        children: [..._screens, if (_hasUserRole) _userHome],
+        index: index,
+        children: [
+          for (final t in _tabs) KeyedSubtree(key: ValueKey(t), child: _screens[t]!),
+        ],
       ),
       bottomNavigationBar: _CustomTabBar(
-        currentIndex: _index,
+        tabs: _tabs,
+        currentIndex: index,
         onTap: _onTabSelected,
-        showUserTab: _hasUserRole,
       ),
     );
   }
@@ -122,26 +160,26 @@ class _MainTabScreenState extends State<MainTabScreen> with SingleTickerProvider
 
 /// Equivalent of `function CustomTabBar({ state, descriptors, navigation })`.
 class _CustomTabBar extends StatefulWidget {
+  final List<AppTab> tabs;
   final int currentIndex;
   final ValueChanged<int> onTap;
-  final bool showUserTab;
 
-  const _CustomTabBar({required this.currentIndex, required this.onTap, this.showUserTab = false});
+  const _CustomTabBar({required this.tabs, required this.currentIndex, required this.onTap});
 
   @override
   State<_CustomTabBar> createState() => _CustomTabBarState();
 }
 
 class _CustomTabBarState extends State<_CustomTabBar> with SingleTickerProviderStateMixin {
-  static const _baseTabs = [
-    (icon: Ionicons.phone_portrait_outline, activeIcon: Ionicons.phone_portrait, label: 'Devices'),
-    (icon: Ionicons.document_text_outline, activeIcon: Ionicons.document_text, label: 'Logs'),
-    (icon: Ionicons.settings_outline, activeIcon: Ionicons.settings, label: 'Settings'),
-  ];
-  static const _userTab = (icon: Ionicons.person_outline, activeIcon: Ionicons.person, label: 'My Cane');
+  static const _meta = <AppTab, ({IconData icon, IconData activeIcon, String label})>{
+    AppTab.home: (icon: Ionicons.home_outline, activeIcon: Ionicons.home, label: 'Home'),
+    AppTab.logs: (icon: Ionicons.document_text_outline, activeIcon: Ionicons.document_text, label: 'Logs'),
+    AppTab.account: (icon: Ionicons.settings_outline, activeIcon: Ionicons.settings, label: 'Account'),
+    AppTab.myCane: (icon: Ionicons.person_outline, activeIcon: Ionicons.person, label: 'My Cane'),
+  };
 
   List<({IconData icon, IconData activeIcon, String label})> get _tabs =>
-      [..._baseTabs, if (widget.showUserTab) _userTab];
+      [for (final t in widget.tabs) _meta[t]!];
 
   @override
   Widget build(BuildContext context) {

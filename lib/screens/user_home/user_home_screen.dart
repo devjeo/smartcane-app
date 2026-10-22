@@ -152,80 +152,69 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
     await _loadPerms();
   }
 
-  Future<void> _linkAnother() async {
-    await Navigator.of(context).pushNamed('/link-as-user');
-    MainTabController.rolesChanged.value++;
-    _loadCanes();
-  }
+  // ---- readiness ----
 
-  // ---- UI ----
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: RefreshIndicator(
-        onRefresh: _refreshAll,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
-          children: [
-            const Text('My Cane',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.textMain)),
-            const SizedBox(height: 4),
-            const Text('Your phone shares the cane\'s location and keeps your guardian informed.',
-                style: TextStyle(fontSize: 14, color: AppColors.textSub, height: 1.4)),
-            const SizedBox(height: 20),
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.all(30),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_loadError != null)
-              _notice(_loadError!, AppColors.alert)
-            else if (_canes.isEmpty)
-              _notice('You are not linked to any cane yet.', AppColors.textSub)
-            else
-              for (final c in _canes) _caneCard(c),
-            const SizedBox(height: 4),
-            OutlinedButton.icon(
-              onPressed: _linkAnother,
-              icon: const Icon(Icons.qr_code_2),
-              label: const Text('Link me to another cane'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-            const SizedBox(height: 28),
-            if (!_loading && _loadError == null && _canes.isNotEmpty) ...[
-              _protectionCard(),
-              const SizedBox(height: 24),
-            ],
-            const Text('Phone readiness',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textMain)),
-            const SizedBox(height: 4),
-            const Text('Fix anything marked in orange so your phone keeps working with the screen off.',
-                style: TextStyle(fontSize: 13, color: AppColors.textSub, height: 1.4)),
-            const SizedBox(height: 12),
-            _checklist(),
-            const SizedBox(height: 16),
-            _samsungTip(),
-          ],
-        ),
+  /// The five phone checks, in the order they are shown.
+  List<_Check> _checks() {
+    final locOk = _loc == LocationPermission.always;
+    final locPartial = _loc == LocationPermission.whileInUse;
+    return [
+      _Check(
+        title: 'Location: allow all the time',
+        okText: 'Your location is shared even when the screen is off.',
+        fixText: locPartial
+            ? 'Currently "only while using the app". Choose "Allow all the time".'
+            : 'Needed so your guardian can see where the cane is.',
+        ok: locOk,
+        known: _loc != null,
+        onFix: _fixLocation,
       ),
-    );
+      _Check(
+        title: 'Notifications',
+        okText: 'You will see the app\'s status.',
+        fixText: 'Needed for the background service notification.',
+        ok: _notif?.isGranted == true,
+        known: _notif != null,
+        onFix: () => _fixPermission(Permission.notification, _notif),
+      ),
+      _Check(
+        title: 'Microphone',
+        okText: 'Ready for emergency calls to your guardian.',
+        fixText: 'Needed so you can talk to your guardian in an emergency call.',
+        ok: _mic?.isGranted == true,
+        known: _mic != null,
+        onFix: () => _fixPermission(Permission.microphone, _mic),
+      ),
+      _Check(
+        title: 'Camera (for live video)',
+        okText: 'Ready to share your camera if your guardian asks.',
+        fixText: 'Needed only for live video. Voice calls work without it.',
+        ok: _cam?.isGranted == true,
+        known: _cam != null,
+        onFix: () => _fixPermission(Permission.camera, _cam),
+      ),
+      _Check(
+        title: 'Battery: unrestricted',
+        okText: 'Android will not put the app to sleep.',
+        fixText: 'Without this, Android may stop the app in the background.',
+        ok: _batt?.isGranted == true,
+        known: _batt != null,
+        onFix: () => _fixPermission(Permission.ignoreBatteryOptimizations, _batt),
+      ),
+    ];
   }
 
-  /// (ok, headline, detail). ON only when an SOS could really start a call.
-  (bool, String, String) _protection() {
+  /// (ok, detail). ON only when an SOS could really start a call.
+  (bool, String) _protection() {
     if (_mic?.isGranted != true) {
-      return (false, 'Call protection: OFF', 'Microphone permission is missing. Tap Fix on Microphone below.');
+      return (false, 'Microphone permission is missing. Tap Fix on Microphone below.');
     }
     if (!_svcRunning) {
-      return (false, 'Call protection: OFF',
+      return (false,
           'The background service is not running. Keep this app open for a moment, or restart your phone and open SmartCane once.');
     }
     if (!_svcHasMic) {
-      return (false, 'Call protection: OFF',
+      return (false,
           'The service started before the microphone was allowed. It is restarting; keep this screen open.');
     }
     final anyOnline = _canes.any((c) {
@@ -237,46 +226,117 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
       final stale = _lastPing == null ||
           DateTime.now().difference(_lastPing!) > const Duration(minutes: 2);
       if (stale) {
-        return (false, 'Call protection: OFF',
+        return (false,
             'This phone has not reported its location for over 2 minutes. Check location "Allow all the time" and battery settings below.');
       }
     }
-    // Voice protection is ON; the camera only affects live video.
-    final camLine = (_cam?.isGranted == true && _svcHasCam)
-        ? 'Camera: ready for live video.'
-        : 'Camera: not ready, so live video is unavailable (voice still works).';
-    return (true, 'Call protection: ON',
-        '${anyOnline ? 'An SOS will call your guardian, even with the screen off.' : 'Ready. Waiting for your cane to come online.'}\n$camLine');
+    return (true,
+        anyOnline
+            ? 'An SOS will call your guardian, even with the screen off.'
+            : 'Ready. Waiting for your cane to come online.');
   }
 
-  Widget _protectionCard() {
-    final (ok, title, detail) = _protection();
-    final color = ok ? AppColors.success : AppColors.warning;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: color.withOpacity(0.5)),
+  // ---- UI ----
+  @override
+  Widget build(BuildContext context) {
+    final checks = _checks();
+    final failing = checks.where((c) => c.known && !c.ok).toList();
+    final allKnown = checks.every((c) => c.known);
+    final showStatus = !_loading && _loadError == null && _canes.isNotEmpty;
+
+    return SafeArea(
+      child: RefreshIndicator(
+        onRefresh: _refreshAll,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+          children: [
+            const Text('My Cane',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+            const SizedBox(height: 16),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(30),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_loadError != null)
+              _notice(_loadError!, AppColors.alert)
+            else if (_canes.isEmpty)
+              _notice('You are not linked to any cane yet. You can link one from Account.',
+                  AppColors.textSub)
+            else ...[
+              if (showStatus) _statusCard(failing.length, allKnown),
+              for (final c in _canes) _caneCard(c),
+            ],
+
+            const SizedBox(height: 8),
+            _readinessSection(checks, failing, allKnown),
+          ],
+        ),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(ok ? Icons.verified_user : Icons.gpp_maybe, color: color, size: 30),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
-                const SizedBox(height: 3),
-                Text(detail,
-                    style: const TextStyle(fontSize: 13, color: AppColors.textMain, height: 1.4)),
-              ],
-            ),
+    );
+  }
+
+  /// U1 "You're all set" (green) or U2 "N things to fix" (amber).
+  Widget _statusCard(int failingCount, bool allKnown) {
+    final (protectionOk, detail) = _protection();
+
+    late final Color color;
+    late final IconData icon;
+    late final String title;
+    late final String body;
+
+    if (!allKnown) {
+      color = AppColors.offline;
+      icon = Icons.hourglass_empty;
+      title = 'Checking your phone…';
+      body = 'One moment.';
+    } else if (protectionOk && failingCount == 0) {
+      color = AppColors.success;
+      icon = Icons.verified_user;
+      title = 'You\'re all set';
+      body = detail;
+    } else {
+      final n = failingCount == 0 ? 1 : failingCount;
+      color = AppColors.warning;
+      icon = Icons.gpp_maybe;
+      title = n == 1 ? '1 thing to fix' : '$n things to fix';
+      body = protectionOk ? 'Fix the items below so your phone keeps working with the screen off.' : detail;
+    }
+
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: '$title. $body',
+      child: ExcludeSemantics(
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 14),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(0.5)),
           ),
-        ],
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: color, size: 34),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
+                    const SizedBox(height: 4),
+                    Text(body,
+                        style: const TextStyle(fontSize: 14, color: AppColors.textMain, height: 1.4)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -292,6 +352,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
         child: Text(text, style: TextStyle(fontSize: 14, color: color)),
       );
 
+  /// Cane name, guardian, Online/Offline, battery, and the one main button.
+  /// Nothing about alerts or logs.
   Widget _caneCard(Map<String, dynamic> c) {
     final lastSeenRaw = c['last_seen_at'] as String?;
     final lastSeen = lastSeenRaw != null ? DateTime.tryParse(lastSeenRaw) : null;
@@ -299,14 +361,16 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
         DateTime.now().difference(lastSeen) < DeviceModel.onlineWindow;
     final battery = c['battery_level'] as int? ?? 0;
     final guardian = (c['guardian'] as Map?)?['full_name'] as String?;
+    final guardianText = guardian?.trim().isNotEmpty == true ? guardian!.trim() : 'unknown';
     final color = online ? AppColors.online : AppColors.offline;
+    final name = c['name'] as String? ?? 'Smart Cane';
 
     return Container(
       padding: const EdgeInsets.all(18),
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: AppColors.card,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
       ),
       child: Column(
@@ -317,7 +381,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
               Icon(Icons.accessible_forward, size: 30, color: color),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(c['name'] as String? ?? 'Smart Cane',
+                child: Text(name,
                     style: const TextStyle(
                         fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textMain)),
               ),
@@ -332,7 +396,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           Row(
             children: [
               Icon(online ? Icons.battery_charging_full : Icons.battery_unknown,
@@ -344,25 +408,32 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
               const Icon(Icons.shield_outlined, size: 18, color: AppColors.textSub),
               const SizedBox(width: 6),
               Flexible(
-                child: Text('Guardian: ${guardian?.trim().isNotEmpty == true ? guardian : 'unknown'}',
+                child: Text('Guardian: $guardianText',
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 14, color: AppColors.textMain)),
               ),
             ],
           ),
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () => Navigator.of(context).pushNamed('/routes', arguments: {
-                'id': c['id'].toString(),
-                'name': c['name'] as String?,
-              }),
-              icon: const Icon(Icons.directions_walk),
-              label: const Text('Walking routes'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          const SizedBox(height: 16),
+          Semantics(
+            button: true,
+            label: 'Start a walk with $name',
+            excludeSemantics: true,
+            child: SizedBox(
+              width: double.infinity,
+              height: 56,
+              child: ElevatedButton.icon(
+                onPressed: () => Navigator.of(context).pushNamed('/routes', arguments: {
+                  'id': c['id'].toString(),
+                  'name': c['name'] as String?,
+                }),
+                icon: const Icon(Icons.directions_walk, size: 24, color: Colors.white),
+                label: const Text('Start a walk',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
               ),
             ),
           ),
@@ -371,66 +442,60 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _checklist() {
-    final locOk = _loc == LocationPermission.always;
-    final locPartial = _loc == LocationPermission.whileInUse;
+  /// Everything fine: one line. Otherwise only the failing rows, each with Fix.
+  Widget _readinessSection(List<_Check> checks, List<_Check> failing, bool allKnown) {
+    if (!allKnown) return const SizedBox.shrink();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          _CheckRow(
-            title: 'Location: allow all the time',
-            okText: 'Your location is shared even when the screen is off.',
-            fixText: locPartial
-                ? 'Currently "only while using the app". Choose "Allow all the time".'
-                : 'Needed so your guardian can see where the cane is.',
-            ok: locOk,
-            known: _loc != null,
-            onFix: _fixLocation,
+    if (failing.isEmpty) {
+      final label = '${checks.length} of ${checks.length} phone checks passed';
+      return Semantics(
+        label: label,
+        excludeSemantics: true,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.border),
           ),
-          const Divider(height: 1, color: AppColors.border),
-          _CheckRow(
-            title: 'Notifications',
-            okText: 'You will see the app\'s status and alerts.',
-            fixText: 'Needed for the background service notification.',
-            ok: _notif?.isGranted == true,
-            known: _notif != null,
-            onFix: () => _fixPermission(Permission.notification, _notif),
+          child: Row(
+            children: [
+              const Icon(Icons.check_circle, color: AppColors.success, size: 22),
+              const SizedBox(width: 10),
+              Text('${checks.length} of ${checks.length} ✓  Phone ready',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.textMain)),
+            ],
           ),
-          const Divider(height: 1, color: AppColors.border),
-          _CheckRow(
-            title: 'Microphone',
-            okText: 'Ready for emergency calls to your guardian.',
-            fixText: 'Needed so you can talk to your guardian in an emergency call.',
-            ok: _mic?.isGranted == true,
-            known: _mic != null,
-            onFix: () => _fixPermission(Permission.microphone, _mic),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('${checks.length - failing.length} of ${checks.length} ready',
+            style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+        const SizedBox(height: 10),
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(color: AppColors.border),
           ),
-          const Divider(height: 1, color: AppColors.border),
-          _CheckRow(
-            title: 'Camera (for live video)',
-            okText: 'Ready to share your camera if your guardian asks.',
-            fixText: 'Needed only for live video. Voice calls work without it.',
-            ok: _cam?.isGranted == true,
-            known: _cam != null,
-            onFix: () => _fixPermission(Permission.camera, _cam),
+          child: Column(
+            children: [
+              for (var i = 0; i < failing.length; i++) ...[
+                if (i > 0) const Divider(height: 1, color: AppColors.border),
+                _CheckRow(check: failing[i]),
+              ],
+            ],
           ),
-          const Divider(height: 1, color: AppColors.border),
-          _CheckRow(
-            title: 'Battery: unrestricted',
-            okText: 'Android will not put the app to sleep.',
-            fixText: 'Without this, Android may stop the app in the background.',
-            ok: _batt?.isGranted == true,
-            known: _batt != null,
-            onFix: () => _fixPermission(Permission.ignoreBatteryOptimizations, _batt),
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        _samsungTip(),
+      ],
     );
   }
 
@@ -450,7 +515,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> with WidgetsBindingObse
       );
 }
 
-class _CheckRow extends StatelessWidget {
+class _Check {
   final String title;
   final String okText;
   final String fixText;
@@ -458,7 +523,7 @@ class _CheckRow extends StatelessWidget {
   final bool known;
   final VoidCallback onFix;
 
-  const _CheckRow({
+  const _Check({
     required this.title,
     required this.okText,
     required this.fixText,
@@ -466,34 +531,53 @@ class _CheckRow extends StatelessWidget {
     required this.known,
     required this.onFix,
   });
+}
+
+/// One failing check with a large Fix button (min 48 px tall).
+class _CheckRow extends StatelessWidget {
+  final _Check check;
+  const _CheckRow({required this.check});
 
   @override
   Widget build(BuildContext context) {
-    final color = !known ? AppColors.offline : (ok ? AppColors.success : AppColors.warning);
     return Padding(
       padding: const EdgeInsets.all(14),
       child: Row(
         children: [
-          Icon(ok ? Icons.check_circle : Icons.error_outline, color: color, size: 26),
+          const Icon(Icons.error_outline, color: AppColors.warning, size: 28),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
+                Text(check.title,
                     style: const TextStyle(
                         fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.textMain)),
                 const SizedBox(height: 2),
-                Text(ok ? okText : fixText,
+                Text(check.fixText,
                     style: const TextStyle(fontSize: 12, color: AppColors.textSub, height: 1.4)),
               ],
             ),
           ),
-          if (known && !ok)
-            TextButton(
-              onPressed: onFix,
-              child: const Text('Fix', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(width: 8),
+          Semantics(
+            button: true,
+            label: 'Fix ${check.title}',
+            excludeSemantics: true,
+            child: SizedBox(
+              height: 48,
+              child: FilledButton(
+                onPressed: check.onFix,
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.warning,
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Fix',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+              ),
             ),
+          ),
         ],
       ),
     );

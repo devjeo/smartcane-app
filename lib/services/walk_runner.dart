@@ -45,6 +45,11 @@ class WalkRunner {
   StreamSubscription<Position>? _posSub;
   Timer? _timer;
   _Walk? _walk;
+
+  /// True while a guided walk is running (used by background location
+  /// sending to switch to fast "live" reporting).
+  bool get isWalking => _walk != null;
+
   Map<String, dynamic> _state = {'phase': 'idle'};
   String _lastSpoken = '';
 

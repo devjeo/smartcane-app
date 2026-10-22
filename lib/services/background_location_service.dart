@@ -30,6 +30,9 @@ import 'user_call_runner.dart';
 import 'sos_ladder_runner.dart';
 import 'walk_runner.dart';
 import 'dart:async';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
+import 'location_filter.dart';
 
 const String kLocationServiceNotificationChannelId =
     'location_tracking_channel';
@@ -116,8 +119,10 @@ void _onServiceStart(ServiceInstance service) async {
   final dbService = SupabaseService.instance;
 
   Timer? ticker;
+  StreamSubscription<Position>? posSub;
   service.on('stopService').listen((_) async {
     ticker?.cancel();
+    await posSub?.cancel();
     await UserCallRunner.instance.stop();
     await SosLadderRunner.instance.stop();
     // Keeps the walk open on the server so it can resume after a restart.
@@ -159,47 +164,129 @@ void _onServiceStart(ServiceInstance service) async {
   // generate random session ID for this background tracking session
   final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
-  // Triggers every 20 seconds, regardless of movement
-  ticker = Timer.periodic(const Duration(seconds: 20), (timer) async {
-    print('=== BACKGROUND TRACKING: Timer Triggered ===');
+  // ---- Movement-driven, filtered location sending -----------------------
+  //
+  //   GPS stream (best accuracy)
+  //     -> LocationFilter  (quality gates, Kalman smoothing, stationary hold)
+  //     -> PublishPolicy   (send on movement / heartbeat / live mode)
+  //     -> location_history
+  //
+  // The GPS stream only runs while the cane is online (same rule as before:
+  // do not wake the GPS chip for a cane that is offline).
+  final filter = LocationFilter();
+  final policy = PublishPolicy();
+  String? deviceId; // cached; re-checked by refresh()
+  var liveMode = false; // guardian watching, walk running, or SOS running
+  var publishing = false; // one insert at a time
+  var refreshing = false;
+  var tick = 0;
 
+  Future<void> onPosition(Position p) async {
+    final id = deviceId;
+    if (id == null) return;
+
+    final DateTime? ts = p.timestamp;
+    final res = filter.process(RawFix(
+      lat: p.latitude,
+      lng: p.longitude,
+      accuracy: p.accuracy,
+      time: ts ?? DateTime.now(),
+      isMocked: p.isMocked,
+      speed: p.speed,
+    ));
+    if (!res.accepted) {
+      print('=== LOCATION: dropped (${res.verdict.name}) ===');
+      return;
+    }
+    final f = res.fix!;
+
+    final reason = policy.decide(f, live: liveMode);
+    if (reason == null || publishing) return;
+
+    publishing = true;
+    try {
+      await dbService.logLocationPing(
+        sessionId: sessionId,
+        deviceId: id,
+        latitude: f.lat,
+        longitude: f.lng,
+        accuracy: f.accuracy,
+      );
+      policy.markPublished(f); // only after a successful send, so failures retry
+      print('=== LOCATION: sent (${reason.name}, +-${f.accuracy.toStringAsFixed(0)} m) ===');
+    } catch (e) {
+      print('=== LOCATION: send failed: $e ===');
+    } finally {
+      publishing = false;
+    }
+  }
+
+  void startStream() {
+    if (posSub != null) return;
+    filter.reset(); // a fresh stream starts with a fresh warm-up
+    policy.reset();
+    final LocationSettings settings = defaultTargetPlatform == TargetPlatform.android
+        ? AndroidSettings(
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 0,
+            intervalDuration: const Duration(seconds: 2),
+          )
+        : const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 0);
+    posSub = Geolocator.getPositionStream(locationSettings: settings).listen(
+      onPosition,
+      onError: (e) => print('=== LOCATION: stream error: $e ==='),
+      cancelOnError: false,
+    );
+    print('=== LOCATION: GPS stream started ===');
+  }
+
+  Future<void> stopStream() async {
+    if (posSub == null) return;
+    await posSub!.cancel();
+    posSub = null;
+    print('=== LOCATION: GPS stream stopped ===');
+  }
+
+  /// Every 15 s: keep the stream in step with the cane's online state and
+  /// refresh live mode. The device id is re-checked every 60 s while online,
+  /// and every tick while offline (so tracking resumes quickly).
+  Future<void> refresh() async {
+    if (refreshing) return;
+    refreshing = true;
     try {
       final user = dbService.currentUser;
       if (user == null) {
-        print('=== BACKGROUND TRACKING ABORTED: User is null ===');
+        deviceId = null;
+        liveMode = false;
+        await stopStream();
         return;
       }
-      print('=== BACKGROUND TRACKING: User Found (${user.id}) ===');
-
-      // 1. Check if the device is online FIRST
-      final deviceId = await dbService.getLinkedDeviceId(user.id);
-      print('=== BACKGROUND TRACKING: Device ID Retrieved ($deviceId) ===');
-      if (deviceId == null) {
-        print(
-            '=== BACKGROUND TRACKING ABORTED: Device offline or not found ===');
+      if (deviceId == null || tick % 4 == 0) {
+        deviceId = await dbService.getLinkedDeviceId(user.id);
+      }
+      final id = deviceId;
+      if (id == null) {
+        liveMode = false;
+        await stopStream(); // cane offline or unpaired: GPS off
         return;
       }
-      print('=== BACKGROUND TRACKING: Device Found ($deviceId) ===');
+      startStream();
 
-      // 2. Only wake up the GPS chip if the device is actually online
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-        ),
-      );
-
-      // 3. Send the location
-      await dbService.logLocationPing(
-        sessionId: sessionId,
-        deviceId: deviceId,
-        latitude: position.latitude,
-        longitude: position.longitude,
-      );
-      print('=== BACKGROUND TRACKING SUCCESS: Pushed to Supabase ===');
+      var live = WalkRunner.instance.isWalking || SosLadderRunner.instance.isActive;
+      if (!live) live = await dbService.isLiveWatchActive(id);
+      if (live != liveMode) print('=== LOCATION: live mode ${live ? "ON" : "OFF"} ===');
+      liveMode = live;
     } catch (e) {
-      print('=== BACKGROUND TRACKING FATAL ERROR: $e ===');
+      print('=== LOCATION: refresh error: $e ===');
+    } finally {
+      tick++;
+      refreshing = false;
     }
-  });
+  }
+
+  await refresh();
+  ticker = Timer.periodic(const Duration(seconds: 15), (_) => refresh());
 }
 
 /// Equivalent to `startBackgroundTracking()` in _layout.tsx.

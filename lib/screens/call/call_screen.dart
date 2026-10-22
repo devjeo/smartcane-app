@@ -268,8 +268,16 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _toggleSpeaker() async {
-    setState(() => _speaker = !_speaker);
-    await _peer?.setSpeaker(_speaker);
+    final want = !_speaker;
+    setState(() => _speaker = want);
+    final ok = await _peer?.setSpeaker(want) ?? false;
+    if (!ok && mounted) {
+      // Show the truth: the phone did not switch, so put the button back.
+      setState(() => _speaker = !want);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't switch the sound output on this phone.")),
+      );
+    }
   }
 
   Future<void> _close({required bool endDb}) async {

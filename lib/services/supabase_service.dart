@@ -30,9 +30,9 @@ class SupabaseService {
       throw Exception('Not authenticated');
     }
 
-    // Alerts on the device card only reflect the last 24h — logs older
-    // than that are excluded from the count entirely.
-    final cutoff = DateTime.now().subtract(const Duration(days: 1)).toIso8601String();
+    // Alerts on the device card only reflect the last 24h (UTC cutoff, see
+    // recentLogCutoffIso). The Logs tab itself shows the full history.
+    final cutoff = recentLogCutoffIso();
 
     final data = await _client
         .from('device_shares')
@@ -106,42 +106,44 @@ class SupabaseService {
 
   // ---------- Logs tab (logs.tsx) ----------
 
-  /// Equivalent of `fetchLogs()` in logs.tsx.
-  Future<List<LogModel>> fetchLogs() async {
+  /// Ids of the canes whose logs this account may read: guardian (admin),
+  /// viewer and solo owner. A cane the account only CARRIES (role 'user')
+  /// never feeds that person's Logs. A cane that is no longer paired (no
+  /// guardian, or the share is gone) is left out, even though its old logs
+  /// still exist in the database; same rule as Home.
+  Future<List<String>> fetchLogDeviceIds() async {
     final user = currentUser;
-    List<String> deviceIds = [];
+    if (user == null) return [];
+    final sharesData = await _client
+        .from('device_shares')
+        .select('devices!inner(id)')
+        .eq('user_id', user.id)
+        .inFilter('role', ['admin', 'viewer', 'owner'])
+        .not('devices.guardian_id', 'is', null);
+    return List<Map<String, dynamic>>.from(sharesData as List)
+        .map((row) => (row['devices'] as Map<String, dynamic>)['id'].toString())
+        .toSet()
+        .toList();
+  }
 
-    if (user != null) {
-      // Use device_shares, same as fetchDevices(), so shared devices
-      // (like the cane, TSC-4236) are included too — not just devices
-      // where you are the guardian_id.
-      final sharesData = await _client
-          .from('device_shares')
-          .select('devices!inner(id)')
-          .eq('user_id', user.id);
-
-      deviceIds = List<Map<String, dynamic>>.from(sharesData as List)
-          .map((row) =>
-              (row['devices'] as Map<String, dynamic>)['id'].toString())
-          .toList();
+  /// One page of the FULL log history, newest first (no age limit).
+  /// Pass [before] (the createdAt of the oldest log already loaded) to get
+  /// the next, older page. The page can repeat logs that share [before]'s
+  /// exact timestamp, so the caller drops duplicates by id.
+  Future<List<LogModel>> fetchLogs({
+    required List<String> deviceIds,
+    DateTime? before,
+    int limit = 100,
+  }) async {
+    if (deviceIds.isEmpty) return [];
+    var query = _client.from('logs').select('*').inFilter('device_id', deviceIds);
+    if (before != null) {
+      query = query.lte('created_at', before.toUtc().toIso8601String());
     }
-
-    print('Fetching logs for devices: $deviceIds');
-
-    // Logs older than 24h are hidden entirely — both from this list and
-    // from the alert count used on the dashboard's device cards.
-    final cutoff = DateTime.now().subtract(const Duration(days: 1)).toIso8601String();
-    print(cutoff);
-
-    final data = await _client
-        .from('logs')
-        .select('*')
-        .inFilter('device_id', deviceIds.isNotEmpty ? deviceIds : ['dummy'])
-        .gte('created_at', cutoff)
-        .order('created_at', ascending: false);
-
-    print('Fetched logs data: $data');
-
+    final data = await query
+        .order('created_at', ascending: false)
+        .order('id', ascending: false)
+        .limit(limit);
     return List<Map<String, dynamic>>.from(data as List)
         .map(LogModel.fromRow)
         .toList();
@@ -502,7 +504,7 @@ class SupabaseService {
   Future<Map<String, dynamic>?> getDeviceLiveStatus(String deviceId) async {
     return await _client
         .from('devices')
-        .select('latitude, longitude, battery_level, last_seen_at')
+        .select('latitude, longitude, battery_level, last_seen_at, last_updated, activity_status')
         .eq('id', deviceId)
         .maybeSingle();
   }
@@ -520,6 +522,38 @@ class SupabaseService {
             ? DateTime.tryParse(row['last_seen_at'] as String)
             : null,
     };
+  }
+
+  /// What Home shows for [ids], counting only logs the guardian has NOT yet
+  /// seen on the Logs tab ([readIds], see LogReadStore):
+  ///  - counts: unread logs per device in the last 24 h (the alert badge)
+  ///  - sosIds: devices with an unread SOS from the last 30 minutes
+  Future<({Map<String, int> counts, Set<String> sosIds})> fetchUnreadSummary(
+    List<String> ids,
+    Set<String> readIds,
+  ) async {
+    if (ids.isEmpty) return (counts: <String, int>{}, sosIds: <String>{});
+    final now = DateTime.now();
+    final cutoff = recentLogCutoffIso();
+    final sosCutoff = now.subtract(const Duration(minutes: 30));
+    final data = await _client
+        .from('logs')
+        .select('id, device_id, alert_type, created_at')
+        .inFilter('device_id', ids)
+        .gte('created_at', cutoff);
+
+    final counts = <String, int>{};
+    final sosIds = <String>{};
+    for (final row in List<Map<String, dynamic>>.from(data as List)) {
+      if (readIds.contains(row['id'].toString())) continue;
+      final deviceId = row['device_id'].toString();
+      counts[deviceId] = (counts[deviceId] ?? 0) + 1;
+      if (row['alert_type'] == 'sos') {
+        final at = DateTime.tryParse(row['created_at']?.toString() ?? '');
+        if (at != null && at.isAfter(sosCutoff)) sosIds.add(deviceId);
+      }
+    }
+    return (counts: counts, sosIds: sosIds);
   }
 
   /// Retrieves up to 2000 of the most recent location points for a device's history.
@@ -589,17 +623,70 @@ class SupabaseService {
     return out;
   }
 
+  /// Set after the server told us `location_history.accuracy` does not exist
+  /// yet (migration not applied): pings are then sent without it instead of
+  /// failing.
+  bool _accuracyColumnMissing = false;
+
+  /// Inserts a location ping into the history table.
+  /// [accuracy] is the (smoothed) error radius in metres; it needs the
+  /// `accuracy` column from sql/01_location_accuracy.sql.
   Future<void> logLocationPing({
     required String deviceId,
     required String sessionId,
     required double latitude,
     required double longitude,
+    double? accuracy,
   }) async {
-    await _client.from('location_history').insert({
+    final row = <String, dynamic>{
       'device_id': deviceId,
       'latitude': latitude,
       'longitude': longitude,
       'session_id': sessionId,
-    });
+    };
+    if (accuracy != null && !_accuracyColumnMissing) {
+      row['accuracy'] = double.parse(accuracy.toStringAsFixed(1));
+    }
+    try {
+      await _client.from('location_history').insert(row);
+    } on PostgrestException catch (e) {
+      // PGRST204 / 42703 = unknown column. Retry once without it.
+      final missing = e.code == 'PGRST204' ||
+          e.code == '42703' ||
+          e.message.contains('accuracy');
+      if (row.containsKey('accuracy') && missing) {
+        _accuracyColumnMissing = true;
+        row.remove('accuracy');
+        await _client.from('location_history').insert(row);
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  // ---------- Live mode (guardian is watching) ----------
+  // Needs sql/01_location_accuracy.sql. Both calls fail soft: if the SQL is
+  // not applied or RLS denies it, live mode simply never turns on and the
+  // normal movement-driven sending keeps working.
+
+  /// Guardian side: "I am watching this cane live for the next [seconds]".
+  /// The expiry is computed by the server clock, so phone clocks cannot
+  /// disagree.
+  Future<void> setLiveWatch(String deviceId, {int seconds = 90}) async {
+    try {
+      await _client.rpc('set_live_watch',
+          params: {'p_device_id': deviceId, 'p_seconds': seconds});
+    } catch (_) {}
+  }
+
+  /// Cane phone side: is a guardian watching live right now?
+  Future<bool> isLiveWatchActive(String deviceId) async {
+    try {
+      final res = await _client
+          .rpc('device_live_watch_active', params: {'p_device_id': deviceId});
+      return res == true;
+    } catch (_) {
+      return false;
+    }
   }
 }

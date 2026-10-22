@@ -3,6 +3,16 @@ import 'package:ionicons_plus/ionicons_plus.dart';
 import 'package:intl/intl.dart';
 import '../theme/app_colors.dart';
 
+/// How far back Home counts unread alerts and the Logs tab pins SOS. The
+/// Logs LIST itself has no limit (full history).
+const Duration kRecentLogWindow = Duration(days: 1);
+
+/// Cutoff for "recent" as a UTC ISO string. ALWAYS UTC: a local time without
+/// a timezone marker is read as UTC by Postgres, which shifts the window by
+/// the phone's UTC offset.
+String recentLogCutoffIso() =>
+    DateTime.now().subtract(kRecentLogWindow).toUtc().toIso8601String();
+
 /// Small value object mirroring the return value of `getStyleForEvent()`.
 class LogEventStyle {
   final IconData icon;
@@ -82,6 +92,9 @@ class LogModel {
   bool get isSos => alertType == 'sos';
   bool get isEmergency => eventType.toLowerCase() == 'emergency';
   bool get hasLocation => lat != null && lng != null;
+
+  /// Inside the window Home counts alerts for (last 24 h).
+  bool get isRecent => DateTime.now().difference(createdAt) < kRecentLogWindow;
 
   /// Equivalent of formatTime(dateString) -> toLocaleTimeString hour:minute
   String get time => DateFormat('h:mm a').format(createdAt.toLocal());

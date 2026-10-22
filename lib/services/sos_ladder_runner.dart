@@ -40,6 +40,10 @@ class SosLadderRunner {
   String? _uid;
   String? _activeId;
 
+  /// True while an SOS ladder is running (used by background location
+  /// sending to switch to fast "live" reporting).
+  bool get isActive => _activeId != null;
+
   /// Call once from the MAIN isolate (e.g. when a solo cane is paired or the
   /// contacts screen opens). Returns true when phone + SMS were granted.
   static Future<bool> ensurePermissions() async {
